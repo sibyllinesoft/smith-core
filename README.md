@@ -66,37 +66,36 @@ Gateways requiring inbound HTTP (WhatsApp, Google Chat, iMessage) need the `webh
 
 ## Architecture
 
-```
-  Discord / Telegram / Slack / Signal / Matrix / Teams
-  Mattermost / WhatsApp / Google Chat / iMessage
-                        |
-                        v
-               Gateway binaries ──> NATS JetStream
-                        |                  |
-                        v                  v
-                   pi-bridge          Session Recorder ──> PostgreSQL
-                  (AI reasoning)           |
-                        |                  v
-                        v            Grafana + ClickHouse
-                   MCP Index              (observability)
-                 (tool catalog)
-                        |
-                        v
-                   MCP Shims ──> Tool Servers (postgres, users, cron, ...)
-                        |
-                        v
-            ┌───────────────────────┐
-            │        agentd         │
-            │  ┌─────────────────┐  │
-            │  │   OPA policies  │  │
-            │  ├─────────────────┤  │
-            │  │    Landlock     │  │
-            │  ├─────────────────┤  │
-            │  │   seccomp-bpf   │  │
-            │  ├─────────────────┤  │
-            │  │   cgroups v2    │  │
-            │  └─────────────────┘  │
-            └───────────────────────┘
+```mermaid
+graph TD
+    Platforms["Discord · Telegram · Slack · Signal · Matrix · Teams<br/>Mattermost · WhatsApp · Google Chat · iMessage"]
+    Platforms --> Gateways["Gateway Binaries"]
+    Gateways --> NATS["NATS JetStream"]
+
+    NATS <--> PiBridge["pi-bridge<br/>(AI reasoning)"]
+    NATS --> Recorder["Session Recorder"]
+
+    Recorder --> Postgres["PostgreSQL"]
+    Recorder --> Observability["Grafana + ClickHouse"]
+
+    PiBridge --> Index
+    PiBridge --> Agentd
+
+    subgraph OPA["OPA Policy Engine"]
+        Index["MCP Index<br/>(tool catalog)"]
+        Index --> Shims["MCP Shims"]
+        Shims --> Tools["Tool Servers<br/>(postgres, users, cron, ...)"]
+
+        subgraph Agentd["agentd — sandboxed execution"]
+            direction LR
+            Landlock ~~~ Seccomp["seccomp-bpf"] ~~~ Cgroups["cgroups v2"]
+        end
+    end
+
+    style Platforms fill:#2d2d44,stroke:#888,color:#eee
+    style OPA fill:#111122,stroke:#e9a545,stroke-width:2px,color:#eee
+    style Agentd fill:#1a1a2e,stroke:#e94560,stroke-width:2px,color:#eee
+    style NATS fill:#1a1a2e,stroke:#0f3460,stroke-width:2px,color:#eee
 ```
 
 **NATS JetStream** is the backbone — all inter-service communication flows through typed subjects with delivery guarantees. No direct service-to-service calls.
