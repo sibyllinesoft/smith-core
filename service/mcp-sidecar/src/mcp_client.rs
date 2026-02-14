@@ -285,7 +285,7 @@ impl McpClient {
             "protocolVersion": "2024-11-05",
             "capabilities": {},
             "clientInfo": {
-                "name": "mcp-shim",
+                "name": "mcp-sidecar",
                 "version": env!("CARGO_PKG_VERSION")
             }
         });

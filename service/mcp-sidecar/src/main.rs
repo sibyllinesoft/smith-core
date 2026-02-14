@@ -17,25 +17,25 @@ use middleware::MiddlewareConfig;
 
 #[derive(Parser)]
 #[command(
-    name = "mcp-shim",
+    name = "mcp-sidecar",
     about = "Bridge any MCP server (stdio) to an HTTP API",
-    after_help = "Pass the MCP server command after --:\n  mcp-shim -- npx @modelcontextprotocol/server-filesystem /data"
+    after_help = "Pass the MCP server command after --:\n  mcp-sidecar -- npx @modelcontextprotocol/server-filesystem /data"
 )]
 struct Cli {
     /// HTTP listen port
-    #[arg(long, default_value = "9100", env = "MCP_SHIM_PORT")]
+    #[arg(long, default_value = "9100", env = "MCP_SIDECAR_PORT")]
     port: u16,
 
     /// Service name for logging
-    #[arg(long, env = "MCP_SHIM_NAME")]
+    #[arg(long, env = "MCP_SIDECAR_NAME")]
     name: Option<String>,
 
     /// Max seconds to wait for MCP initialize response
-    #[arg(long, default_value = "10", env = "MCP_SHIM_INIT_TIMEOUT")]
+    #[arg(long, default_value = "10", env = "MCP_SIDECAR_INIT_TIMEOUT")]
     init_timeout: u64,
 
     /// Path to middleware TOML config (input/output transforms, filters)
-    #[arg(long, env = "MCP_SHIM_MIDDLEWARE")]
+    #[arg(long, env = "MCP_SIDECAR_MIDDLEWARE")]
     middleware: Option<PathBuf>,
 
     /// The MCP server command and arguments (everything after --)
@@ -54,7 +54,7 @@ pub struct AppState {
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("mcp_shim=info")
+            EnvFilter::new("mcp_sidecar=info")
         }))
         .init();
 
@@ -71,7 +71,7 @@ async fn main() -> Result<()> {
     tracing::info!(
         service_name,
         port = cli.port,
-        "starting mcp-shim"
+        "starting mcp-sidecar"
     );
 
     // Load middleware config if provided

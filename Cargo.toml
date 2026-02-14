@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "service/mcp-shim",
+    "service/mcp-sidecar",
     "service/mcp-index",
     "service/smith-chat",
     "service/admission",

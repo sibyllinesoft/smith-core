@@ -1210,7 +1210,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mcp-shim"
+name = "mcp-sidecar"
 version = "0.1.0"
 dependencies = [
  "anyhow",

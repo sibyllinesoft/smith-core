@@ -6,8 +6,8 @@ WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 
 # Create stub workspace members (cargo needs them for resolution)
-COPY service/mcp-shim/Cargo.toml service/mcp-shim/Cargo.toml
-RUN mkdir -p service/mcp-shim/src && echo "fn main(){}" > service/mcp-shim/src/main.rs
+COPY service/mcp-sidecar/Cargo.toml service/mcp-sidecar/Cargo.toml
+RUN mkdir -p service/mcp-sidecar/src && echo "fn main(){}" > service/mcp-sidecar/src/main.rs
 
 COPY service/smith-chat/Cargo.toml service/smith-chat/Cargo.toml
 RUN mkdir -p service/smith-chat/src && echo "" > service/smith-chat/src/lib.rs

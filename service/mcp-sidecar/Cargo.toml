@@ -1,10 +1,10 @@
 [package]
-name = "mcp-shim"
+name = "mcp-sidecar"
 version.workspace = true
 edition.workspace = true
 
 [[bin]]
-name = "mcp-shim"
+name = "mcp-sidecar"
 path = "src/main.rs"
 
 [dependencies]

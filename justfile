@@ -69,8 +69,8 @@ npm-install:
 # ── Running Services ──────────────────────────────────────────────────────
 
 # Run the MCP shim (pass MCP server command after --)
-run-mcp-shim *args:
-    cargo run -p mcp-shim -- {{args}}
+run-mcp-sidecar *args:
+    cargo run -p mcp-sidecar -- {{args}}
 
 # Run the MCP index
 run-mcp-index:

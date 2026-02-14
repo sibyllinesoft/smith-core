@@ -83,7 +83,7 @@ graph TD
 
     subgraph OPA["OPA Policy Engine"]
         Index["MCP Index<br/>(tool catalog)"]
-        Index --> Shims["MCP Shims"]
+        Index --> Shims["MCP Sidecars"]
         Shims --> Tools["Tool Servers<br/>(postgres, users, cron, ...)"]
 
         subgraph Agentd["agentd — sandboxed execution"]
@@ -119,19 +119,19 @@ agentd has zero intelligence. It receives vetted intents, executes them inside t
 | Partial sandbox | seccomp + cgroups | Older Linux |
 | Demo mode | Policy-only | Any OS |
 
-### MCP Shim — Tool bridge
+### MCP Sidecar — Tool bridge
 
 Wraps any stdio-based MCP server in an HTTP API. Spawn a tool server, get an HTTP endpoint:
 
 ```bash
-just run-mcp-shim -- npx @modelcontextprotocol/server-filesystem /data
+just run-mcp-sidecar -- npx @modelcontextprotocol/server-filesystem /data
 ```
 
 Supports optional middleware transforms (TOML config) for input injection, output redaction, argument filtering, and more.
 
 ### MCP Index — Tool catalog
 
-Aggregates tools from multiple MCP shim instances into a single searchable catalog. Agents query one endpoint to discover all available tools. Polls upstream shims at configurable intervals.
+Aggregates tools from multiple MCP sidecar instances into a single searchable catalog. Agents query one endpoint to discover all available tools. Polls upstream sidecars at configurable intervals.
 
 ### Admission control
 
@@ -188,7 +188,7 @@ smith-core/
 │   ├── agentd/          # Sandboxed execution daemon (independent Rust workspace)
 │   └── pi-bridge/       # AI reasoning bridge (TypeScript)
 ├── service/
-│   ├── mcp-shim/        # MCP stdio-to-HTTP bridge
+│   ├── mcp-sidecar/        # MCP stdio-to-HTTP bridge
 │   ├── mcp-index/       # Unified tool catalog
 │   ├── smith-chat/      # Chat adapters + 10 gateway binaries
 │   ├── admission/       # OPA policy sync
