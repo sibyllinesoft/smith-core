@@ -1,0 +1,91 @@
+# Monitoring overlay for agentd
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.monitoring.yaml up -d
+#
+# Services:
+# - prometheus: Metrics collection (scrapes agentd, envoy-gateway, envoy-egress)
+# - loki: Log aggregation backend
+# - promtail: Docker container log shipper
+# - grafana: Dashboards and exploration (provisioned with datasources + dashboard)
+#
+# Ports:
+# - 3000: Grafana (admin/admin)
+# - 9090: Prometheus
+# - 3100: Loki
+
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: agentd-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ../prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=30d"
+    networks:
+      - agentd-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  loki:
+    image: grafana/loki:latest
+    container_name: agentd-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ../loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+    command: ["-config.file=/etc/loki/loki.yml"]
+    networks:
+      - agentd-network
+    healthcheck:
+      test: ["NONE"]
+
+  promtail:
+    image: grafana/promtail:latest
+    container_name: agentd-promtail
+    volumes:
+      - ../promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ["-config.file=/etc/promtail/promtail.yml"]
+    depends_on:
+      - loki
+    networks:
+      - agentd-network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: agentd-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - agentd-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:

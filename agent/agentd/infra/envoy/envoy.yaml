@@ -1,0 +1,208 @@
+# Envoy configuration for agentd API gateway
+#
+# Features:
+# - External authorization via OPA for unified policy
+# - Rate limiting
+# - TLS termination (optional)
+# - Request routing to agentd gRPC/HTTP
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    # Main API listener (HTTP/gRPC)
+    - name: api_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8080
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: api_gateway
+                codec_type: AUTO
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          client: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          status: "%RESPONSE_CODE%"
+                          duration_ms: "%DURATION%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                          user_agent: "%REQ(USER-AGENT)%"
+                          auth_status: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:auth_status)%"
+                route_config:
+                  name: api_routes
+                  virtual_hosts:
+                    - name: agentd_api
+                      domains: ["*"]
+                      routes:
+                        # Health check - no auth required
+                        - match:
+                            path: "/health"
+                          route:
+                            cluster: agentd_http
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
+
+                        # Readiness check - no auth required
+                        - match:
+                            path: "/ready"
+                          route:
+                            cluster: agentd_http
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
+
+                        # gRPC services - full auth
+                        - match:
+                            prefix: "/agentd.v1.Agentd/"
+                          route:
+                            cluster: agentd_grpc
+                            timeout: 300s  # Long timeout for execution
+
+                        # REST API - full auth
+                        - match:
+                            prefix: "/api/v1/"
+                          route:
+                            cluster: agentd_http
+                            timeout: 300s
+
+                        # Default route
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: agentd_http
+
+                http_filters:
+                  # Rate limiting (local)
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: rate_limit
+                      token_bucket:
+                        max_tokens: 1000
+                        tokens_per_fill: 100
+                        fill_interval: 1s
+                      filter_enabled:
+                        runtime_key: local_rate_limit_enabled
+                        default_value:
+                          numerator: 100
+                          denominator: HUNDRED
+                      filter_enforced:
+                        runtime_key: local_rate_limit_enforced
+                        default_value:
+                          numerator: 100
+                          denominator: HUNDRED
+                      response_headers_to_add:
+                        - append_action: OVERWRITE_IF_EXISTS_OR_ADD
+                          header:
+                            key: x-rate-limit-remaining
+                            value: "%DYNAMIC_METADATA(envoy.filters.http.local_ratelimit:tokens_remaining)%"
+
+                  # External authorization via OPA
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_authz
+                        timeout: 1s
+                      failure_mode_allow: false
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
+                        pack_as_bytes: false
+                      status_on_error:
+                        code: 503
+
+                  # Router (must be last)
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    # TLS listener (optional, uncomment to enable)
+    # - name: api_listener_tls
+    #   address:
+    #     socket_address:
+    #       address: 0.0.0.0
+    #       port_value: 8443
+    #   filter_chains:
+    #     - transport_socket:
+    #         name: envoy.transport_sockets.tls
+    #         typed_config:
+    #           "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+    #           common_tls_context:
+    #             tls_certificates:
+    #               - certificate_chain:
+    #                   filename: /etc/envoy/certs/server.crt
+    #                 private_key:
+    #                   filename: /etc/envoy/certs/server.key
+
+  clusters:
+    # agentd gRPC cluster
+    - name: agentd_grpc
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: agentd_grpc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: agentd
+                      port_value: 9500
+
+    # agentd HTTP cluster
+    - name: agentd_http
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: agentd_http
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: agentd
+                      port_value: 8080
+
+    # OPA authorization service
+    - name: opa_authz
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: opa_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: opa
+                      port_value: 9191

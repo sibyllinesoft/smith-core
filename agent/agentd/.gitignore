@@ -1,0 +1,51 @@
+# Build artifacts
+/target/
+**/target/
+
+# Cargo lock for libraries (kept for binary)
+# Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+*.log
+test_output.log
+tarpaulin-report.*
+
+# Temporary files
+tmp/
+*.tmp
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Policy bundles (generated)
+/build/
+
+# Environment files
+.env
+.env.local
+.env.production
+infra/compose/.env
+
+# Generated secrets (NEVER commit!)
+policy/data/egress_secrets.json
+**/secrets.json
+**/*_secrets.json
+
+# npm platform binaries (CI-generated)
+npm/agentd-*/agentd
+
+# Node
+node_modules/

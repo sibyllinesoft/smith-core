@@ -1,0 +1,14 @@
+apiVersion: 1
+
+datasources:
+  - name: PostgreSQL
+    type: postgres
+    access: proxy
+    uid: postgres
+    url: postgres:5432
+    user: smith_readonly
+    jsonData:
+      database: smith
+      sslmode: disable
+    secureJsonData:
+      password: smith-readonly-dev

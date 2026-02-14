@@ -1,0 +1,192 @@
+{
+  "uid": "smith-token-usage",
+  "title": "Token Usage",
+  "tags": ["smith", "tokens", "cost"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "agent_id",
+        "type": "query",
+        "datasource": { "uid": "postgres", "type": "postgres" },
+        "query": "SELECT DISTINCT agent_id FROM chat_token_usage ORDER BY 1",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "allValue": "%",
+        "refresh": 2,
+        "sort": 1
+      },
+      {
+        "name": "model",
+        "type": "query",
+        "datasource": { "uid": "postgres", "type": "postgres" },
+        "query": "SELECT DISTINCT model FROM chat_token_usage WHERE model != '' ORDER BY 1",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "allValue": "%",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Tokens Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 0 },
+      "datasource": { "uid": "postgres", "type": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  date_trunc('hour', created_at) AS time,\n  SUM(input_tokens) AS input_tokens,\n  SUM(output_tokens) AS output_tokens,\n  SUM(cache_read_tokens) AS cache_read_tokens\nFROM chat_token_usage\nWHERE created_at >= $__timeFrom()\n  AND created_at <= $__timeTo()\n  AND agent_id LIKE '$agent_id'\n  AND model LIKE '$model'\nGROUP BY 1\nORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "pointSize": 5,
+            "lineWidth": 2,
+            "stacking": { "mode": "normal" }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "input_tokens" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#73BF69" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "output_tokens" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#F2495C" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "cache_read_tokens" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "#5794F2" } }]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "Token Breakdown by Model",
+      "type": "piechart",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 0 },
+      "datasource": { "uid": "postgres", "type": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  model,\n  SUM(input_tokens + output_tokens) AS total_tokens\nFROM chat_token_usage\nWHERE created_at >= $__timeFrom()\n  AND created_at <= $__timeTo()\n  AND agent_id LIKE '$agent_id'\n  AND model != ''\nGROUP BY model\nORDER BY total_tokens DESC",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "reduceOptions": {
+          "calcs": ["sum"]
+        },
+        "legend": {
+          "displayMode": "table",
+          "placement": "right"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Cost Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "datasource": { "uid": "postgres", "type": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  date_trunc('hour', created_at) AS time,\n  agent_id,\n  SUM(cost_usd) AS cost_usd\nFROM chat_token_usage\nWHERE created_at >= $__timeFrom()\n  AND created_at <= $__timeTo()\n  AND agent_id LIKE '$agent_id'\n  AND model LIKE '$model'\nGROUP BY 1, 2\nORDER BY 1",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "stacking": { "mode": "normal" }
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Cumulative Cost",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "datasource": { "uid": "postgres", "type": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  created_at AS time,\n  SUM(cost_usd) OVER (ORDER BY created_at) AS cumulative_cost\nFROM chat_token_usage\nWHERE created_at >= $__timeFrom()\n  AND created_at <= $__timeTo()\n  AND agent_id LIKE '$agent_id'\n  AND model LIKE '$model'\nORDER BY created_at",
+          "format": "time_series",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "decimals": 4,
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "gradientMode": "scheme"
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Session Cost Summary",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "datasource": { "uid": "postgres", "type": "postgres" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  cs.id AS session_id,\n  cs.agent_id,\n  cs.first_message,\n  cs.created_at,\n  COUNT(t.id) AS turns,\n  SUM(t.input_tokens) AS total_input,\n  SUM(t.output_tokens) AS total_output,\n  SUM(t.cache_read_tokens) AS total_cache_read,\n  SUM(t.cost_usd) AS total_cost\nFROM chat_sessions cs\nJOIN chat_token_usage t ON t.session_id = cs.id\nWHERE cs.created_at >= $__timeFrom()\n  AND cs.created_at <= $__timeTo()\n  AND cs.agent_id LIKE '$agent_id'\nGROUP BY cs.id, cs.agent_id, cs.first_message, cs.created_at\nORDER BY total_cost DESC\nLIMIT 50",
+          "format": "table",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "total_cost" },
+            "properties": [
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "decimals", "value": 4 }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "first_message" },
+            "properties": [
+              { "id": "custom.width", "value": 400 }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

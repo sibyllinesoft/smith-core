@@ -1,0 +1,39 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+*.tgz
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Credentials
+credentials/
+*.pem
+*.key
+*.crt
+
+# Build artifacts
+build/
+tmp/
+
+# Coverage artifacts
+*.lcov
+cobertura.xml
+
+# Docker volumes
+data/

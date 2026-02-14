@@ -1,0 +1,14 @@
+name: "eng-alpha"
+mode: explore           # strict|explore|shadow  
+enable:
+  atoms:    ["fs.read.v1","http.fetch.v1"]
+  macros:   ["Spec.ReadSummary"] 
+  playbooks:["SDLC.Basic"]
+params:
+  http.fetch.v1: 
+    timeout_ms: 3000
+    hosts: ["api.example.com"]
+guards:
+  atoms: 
+    default_max_bytes: 1048576
+    require_justification: true

@@ -1,0 +1,25 @@
+[Unit]
+Description=agentd - Agent daemon for secure capability execution
+Documentation=https://agentd.rs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/agentd --isolation host
+Restart=on-failure
+RestartSec=5s
+
+# User-configurable environment (capability digest, NATS URL, etc.)
+EnvironmentFile=-%h/.config/agentd/env
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+# Allow agentd to write its own data directory
+ReadWritePaths=%h/.local/share/agentd
+
+[Install]
+WantedBy=default.target

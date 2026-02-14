@@ -1,0 +1,53 @@
+# Development Docker Compose for agentd API Gateway
+#
+# This is a simplified setup for local development that doesn't
+# require building the agentd container - it just runs Envoy + OPA.
+#
+# agentd is expected to run on the host machine.
+#
+# Usage:
+#   # Build policy bundle first
+#   ./scripts/build-policy-bundle.sh
+#
+#   # Start gateway services
+#   docker compose -f infra/compose/docker-compose.dev.yaml up -d
+#
+#   # Run agentd on host
+#   cargo run --release -- daemon
+#
+# Ports:
+# - 8080: API Gateway (Envoy)
+# - 9901: Envoy Admin
+# - 8181: OPA Policy API
+
+services:
+  envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: agentd-gateway-dev
+    ports:
+      - "8080:8080"
+      - "9901:9901"
+    volumes:
+      - ../envoy/envoy-dev.yaml:/etc/envoy/envoy.yaml:ro
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    depends_on:
+      - opa
+    network_mode: host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: agentd-opa-dev
+    ports:
+      - "8181:8181"
+      - "9191:9191"
+    volumes:
+      - ../opa/opa.yaml:/etc/opa/config.yaml:ro
+      - ../../build/bundles:/bundles:ro
+    command:
+      - "run"
+      - "--server"
+      - "--config-file=/etc/opa/config.yaml"
+      - "--addr=0.0.0.0:8181"
+    network_mode: host

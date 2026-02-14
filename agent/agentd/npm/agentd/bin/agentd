@@ -1,0 +1,57 @@
+#!/usr/bin/env node
+
+"use strict";
+
+const { spawnSync } = require("child_process");
+const path = require("path");
+const os = require("os");
+
+function getBinaryPath() {
+  // Allow override via environment variable
+  if (process.env.AGENTD_BINARY) {
+    return process.env.AGENTD_BINARY;
+  }
+
+  const platform = os.platform();
+  const arch = os.arch();
+
+  const PLATFORMS = {
+    "linux-x64": "@sibyllinesoft/agentd-linux-x64",
+    "linux-arm64": "@sibyllinesoft/agentd-linux-arm64",
+    "darwin-x64": "@sibyllinesoft/agentd-darwin-x64",
+    "darwin-arm64": "@sibyllinesoft/agentd-darwin-arm64",
+  };
+
+  const key = `${platform}-${arch}`;
+  const pkg = PLATFORMS[key];
+
+  if (!pkg) {
+    console.error(
+      `Unsupported platform: ${platform}-${arch}\n` +
+        `agentd supports: ${Object.keys(PLATFORMS).join(", ")}`
+    );
+    process.exit(1);
+  }
+
+  try {
+    return require.resolve(`${pkg}/agentd`);
+  } catch {
+    console.error(
+      `Could not find the agentd binary for ${platform}-${arch}.\n` +
+        `The platform package ${pkg} may not have been installed.\n` +
+        `Try reinstalling: npm install -g @sibyllinesoft/agentd`
+    );
+    process.exit(1);
+  }
+}
+
+const result = spawnSync(getBinaryPath(), process.argv.slice(2), {
+  stdio: "inherit",
+});
+
+if (result.error) {
+  console.error("Failed to run agentd:", result.error.message);
+  process.exit(1);
+}
+
+process.exit(result.status ?? 1);

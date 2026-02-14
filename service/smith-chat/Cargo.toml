@@ -1,0 +1,100 @@
+[package]
+name = "smith-chat"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
+description = "Unified Smith chat bridge (core library + daemon)"
+
+[lib]
+name = "chat_bridge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "smith-chat-daemon"
+path = "src/bin/daemon.rs"
+
+[[bin]]
+name = "smith-discord-gateway"
+path = "src/bin/discord_gateway.rs"
+
+[[bin]]
+name = "smith-signal-gateway"
+path = "src/bin/signal_gateway.rs"
+
+[[bin]]
+name = "smith-google-chat-gateway"
+path = "src/bin/google_chat_gateway.rs"
+required-features = ["webhooks"]
+
+[[bin]]
+name = "smith-imessage-gateway"
+path = "src/bin/imessage_gateway.rs"
+required-features = ["webhooks"]
+
+[[bin]]
+name = "smith-matrix-gateway"
+path = "src/bin/matrix_gateway.rs"
+
+[[bin]]
+name = "smith-telegram-gateway"
+path = "src/bin/telegram_gateway.rs"
+
+[[bin]]
+name = "smith-slack-gateway"
+path = "src/bin/slack_gateway.rs"
+
+[[bin]]
+name = "smith-whatsapp-gateway"
+path = "src/bin/whatsapp_gateway.rs"
+required-features = ["webhooks"]
+
+[[bin]]
+name = "smith-teams-gateway"
+path = "src/bin/teams_gateway.rs"
+
+[[bin]]
+name = "smith-mattermost-gateway"
+path = "src/bin/mattermost_gateway.rs"
+
+# Legacy alias retained temporarily for callers that haven't switched; remove once consumers are updated
+# [[bin]]
+# name = "chat-bridge-daemon"
+# path = "src/bin/daemon.rs"
+
+[features]
+default = []
+otel-exporter = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
+webhooks = ["dep:axum"]
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+base64 = "0.22"
+chrono = { workspace = true }
+futures = { workspace = true }
+async-nats = { workspace = true }
+clap = { workspace = true, features = ["derive", "env"] }
+redis = { version = "0.24", features = ["aio", "connection-manager", "tokio-comp"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "signal"] }
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1"] }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+toml = "0.8"
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+urlencoding = "2"
+uuid = { workspace = true }
+jsonwebtoken = "9"
+rand = "0.8"
+axum = { version = "0.7", optional = true }
+opentelemetry = { version = "0.24", features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.24", features = ["trace"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+hyper = { version = "1.7", features = ["http1", "server"] }

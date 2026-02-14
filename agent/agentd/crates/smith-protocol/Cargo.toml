@@ -1,0 +1,43 @@
+[package]
+name = "smith-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared protocol definitions for agent execution system"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+uuid = { workspace = true, features = ["v4", "v7", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+anyhow = { workspace = true }
+base64 = "0.22"
+ed25519-dalek = { version = "2.0", features = ["serde"] }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+
+# Client dependencies
+tokio = { workspace = true, features = ["net", "io-util", "macros", "sync", "time", "rt"] }
+tracing = { workspace = true }
+
+# Internal dependency
+smith-bus = { path = "../smith-bus", version = "0.1.0" }
+
+# Optional dependencies for NATS integration
+async-nats = { workspace = true, optional = true }
+schemars = { version = "0.8", optional = true }
+ts-rs = { version = "11", optional = true, features = ["serde-compat", "uuid-impl", "serde-json-impl"] }
+
+[features]
+default = []
+hooks-quickjs = []
+hooks-deno = []
+hooks-rust = []
+nats = ["async-nats"]
+jsonschema = ["schemars"]
+protobuf = []
+typescript = ["ts-rs"]

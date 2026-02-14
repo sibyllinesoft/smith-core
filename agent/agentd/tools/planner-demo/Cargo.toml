@@ -1,0 +1,107 @@
+[package]
+name = "planner-demo"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Comprehensive demo application for the Smith planner-executor controller"
+keywords = ["planner", "executor", "demo", "workflow", "ai"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "planner-demo"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+async-trait = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
+
+# CLI interface
+clap = { workspace = true, features = ["derive", "env", "color"] }
+dialoguer = "0.11"  # Interactive prompts
+console = "0.15"    # Terminal styling
+indicatif = "0.17"  # Progress bars
+colored = "2.1"     # Colored output
+
+# Time and UUID
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+
+# NATS client for message publishing/subscribing
+async-nats = "0.42"
+
+# Smith platform integration
+smith-protocol = { path = "../../../shared/smith-protocol" }
+smith-bus = { path = "../../../shared/smith-bus" }
+smith-config = { path = "../../../shared/smith-config" }
+
+# Real-time monitoring and visualization
+crossterm = "0.27"      # Terminal control
+ratatui = "0.27"        # Terminal UI framework
+tokio-util = "0.7"      # Stream utilities
+
+# Data structures for demo scenarios
+indexmap = { version = "2.2", features = ["serde"] }
+dashmap = "6.0"         # Concurrent maps
+
+# HTTP client for API interactions
+reqwest = { version = "0.12", features = ["json", "stream"] }
+
+# Configuration and environment
+config = "0.14"
+dotenv = "0.15"
+
+# JSON schema validation for demo scenarios
+jsonschema = "0.17"
+
+# Performance monitoring
+metrics = "0.23"
+metrics-exporter-prometheus = "0.15"
+
+# Demo data generation
+rand = "0.8"
+fake = { version = "2.9", features = ["derive", "chrono"] }
+
+[dev-dependencies]
+criterion = { workspace = true }
+test-log = "0.2"
+pretty_assertions = "1.0"
+tempfile = "3.0"
+
+# Examples
+[[example]]
+name = "simple_goal"
+path = "examples/simple_goal.rs"
+
+[[example]]
+name = "complex_workflow"
+path = "examples/complex_workflow.rs"
+
+[[example]]
+name = "user_intervention"
+path = "examples/user_intervention.rs"
+
+[[example]]
+name = "performance_benchmark"
+path = "examples/performance_benchmark.rs"
+
+[features]
+default = ["tui"]
+tui = ["ratatui", "crossterm"]  # Terminal UI support
+metrics = ["metrics", "metrics-exporter-prometheus"]  # Metrics collection

@@ -1,0 +1,14 @@
+name: "prod-safe"
+mode: strict            # strict|explore|shadow  
+enable:
+  atoms:    ["fs.read.v1"]
+  macros:   ["Spec.ReadSummary"] 
+  playbooks:["SDLC.Basic"]
+params:
+  fs.read.v1: 
+    max_bytes: 512000
+    allowed_paths: ["/tmp", "/var/log"]
+guards:
+  atoms: 
+    default_max_bytes: 512000
+    require_justification: false

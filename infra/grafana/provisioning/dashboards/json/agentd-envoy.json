@@ -1,0 +1,385 @@
+{
+  "uid": "smith-agentd-envoy",
+  "title": "agentd / Envoy Gateway",
+  "description": "Envoy gateway traffic, latency, and agentd route metrics",
+  "tags": ["agentd", "envoy", "gateway"],
+  "timezone": "browser",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "stat_prefix",
+        "label": "Listener",
+        "type": "custom",
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": [
+          { "selected": true, "text": "All", "value": "$__all" },
+          { "selected": false, "text": "ingress_https", "value": "ingress_https" },
+          { "selected": false, "text": "otlp_grpc", "value": "otlp_grpc" },
+          { "selected": false, "text": "otlp_http", "value": "otlp_http" }
+        ],
+        "includeAll": true,
+        "multi": true,
+        "query": "ingress_https,otlp_grpc,otlp_http"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Gateway Requests / sec",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "gradientMode": "scheme",
+            "spanNulls": false,
+            "stacking": { "mode": "normal" }
+          },
+          "unit": "reqps"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*5xx.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*4xx.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "orange", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*2xx.*" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(smith_envoy_http_downstream_rq_xx{envoy_response_code_class=~\"$stat_prefix\"}[5m])) by (envoy_response_code_class)",
+          "legendFormat": "{{envoy_response_code_class}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(smith_envoy_http_downstream_rq_total{envoy_http_conn_manager_prefix=~\"$stat_prefix\"}[5m]))",
+          "legendFormat": "total",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Gateway Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false
+          },
+          "unit": "ms"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(smith_envoy_http_downstream_rq_time_bucket[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(smith_envoy_http_downstream_rq_time_bucket[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(smith_envoy_http_downstream_rq_time_bucket[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Active Connections",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": false
+          },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "smith_envoy_http_downstream_cx_active",
+          "legendFormat": "downstream active",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(smith_envoy_cluster_upstream_cx_active) by (envoy_cluster_name)",
+          "legendFormat": "upstream {{envoy_cluster_name}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Upstream Requests / sec by Cluster",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 50,
+            "spanNulls": false,
+            "stacking": { "mode": "normal" }
+          },
+          "unit": "reqps"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(smith_envoy_cluster_upstream_rq_total[5m])) by (envoy_cluster_name)",
+          "legendFormat": "{{envoy_cluster_name}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Upstream Error Rate by Cluster",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(smith_envoy_cluster_upstream_rq_xx{envoy_response_code_class=\"5\"}[5m])) by (envoy_cluster_name)",
+          "legendFormat": "5xx {{envoy_cluster_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(smith_envoy_cluster_upstream_rq_timeout[5m])) by (envoy_cluster_name)",
+          "legendFormat": "timeout {{envoy_cluster_name}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(smith_envoy_cluster_upstream_cx_connect_fail[5m])) by (envoy_cluster_name)",
+          "legendFormat": "conn fail {{envoy_cluster_name}}",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "agentd gRPC Upstream Latency",
+      "description": "Latency to the agentd_grpc cluster (Unix socket)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false
+          },
+          "unit": "ms"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(smith_envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name=\"agentd_grpc\"}[5m])) by (le))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(smith_envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name=\"agentd_grpc\"}[5m])) by (le))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum(rate(smith_envoy_cluster_upstream_rq_time_bucket{envoy_cluster_name=\"agentd_grpc\"}[5m])) by (le))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "agentd gRPC Requests / sec",
+      "description": "Request rate to the agentd_grpc cluster",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(smith_envoy_cluster_upstream_rq_total{envoy_cluster_name=\"agentd_grpc\"}[5m]))",
+          "legendFormat": "total",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(smith_envoy_cluster_upstream_rq_xx{envoy_cluster_name=\"agentd_grpc\"}[5m])) by (envoy_response_code_class)",
+          "legendFormat": "{{envoy_response_code_class}}xx",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Envoy Server Info",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "LIVE", "color": "green" } } }
+          ]
+        }
+      },
+      "targets": [
+        {
+          "expr": "smith_envoy_server_live",
+          "legendFormat": "Server Status",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Envoy Memory (allocated)",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": false
+          },
+          "unit": "bytes"
+        }
+      },
+      "targets": [
+        {
+          "expr": "smith_envoy_server_memory_allocated",
+          "legendFormat": "allocated",
+          "refId": "A"
+        },
+        {
+          "expr": "smith_envoy_server_memory_heap_size",
+          "legendFormat": "heap size",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "ext_authz Decisions / sec",
+      "description": "Rate of auth decisions by the smith-ext-authz service",
+      "type": "timeseries",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 20,
+            "spanNulls": false
+          },
+          "unit": "reqps"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(smith_envoy_http_ext_authz_ok[5m]))",
+          "legendFormat": "allowed",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(rate(smith_envoy_http_ext_authz_denied[5m]))",
+          "legendFormat": "denied",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(rate(smith_envoy_http_ext_authz_error[5m]))",
+          "legendFormat": "error",
+          "refId": "C"
+        }
+      ]
+    }
+  ],
+  "version": 1
+}

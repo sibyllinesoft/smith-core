@@ -1,0 +1,293 @@
+# OpenTelemetry Collector configuration for Smith platform
+# WITH SCHEMA NORMALIZATION
+#
+# This configuration normalizes telemetry from different agents (codex, Claude Code)
+# into a unified Smith semantic convention schema.
+
+receivers:
+  # OTLP receiver for gRPC protocol (primary)
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Prometheus scraper for infrastructure metrics (Envoy admin stats)
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: envoy-gateway
+          scrape_interval: 15s
+          metrics_path: /stats/prometheus
+          static_configs:
+            - targets: ['envoy:9901']
+
+  # File log receiver for container logs (optional)
+  filelog:
+    include:
+      - /var/log/smith/*.log
+    exclude:
+      - /var/log/smith/*.tmp
+    operators:
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.timestamp
+          layout: '%Y-%m-%dT%H:%M:%S.%fZ'
+    start_at: beginning
+    poll_interval: 1s
+
+processors:
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    limit_mib: ${env:OTEL_MEMORY_LIMIT_MIB}
+    spike_limit_mib: ${env:OTEL_SPIKE_LIMIT_MIB}
+    check_interval: 5s
+
+  # Batch processor for efficient export
+  batch:
+    send_batch_size: ${env:OTEL_BATCH_SIZE}
+    timeout: ${env:OTEL_BATCH_TIMEOUT}
+    send_batch_max_size: 1024
+
+  # Resource processor to add deployment information
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: ${env:DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+      - key: service.namespace
+        value: smith
+        action: upsert
+
+  # Transform processor for schema normalization
+  # This is the KEY processor that normalizes different agent schemas
+  transform/normalize_logs:
+    error_mode: ignore
+    log_statements:
+      - context: log
+        statements:
+          # ============================================================
+          # NORMALIZE SESSION ID
+          # ============================================================
+          # Codex uses 'conversation.id', Claude Code uses 'session.id'
+          # Normalize both to 'session.id'
+          - set(attributes["session.id"], attributes["conversation.id"]) where attributes["conversation.id"] != nil
+
+          # ============================================================
+          # NORMALIZE EVENT TYPE
+          # ============================================================
+          # Keep original event.name but also set smith.event.type
+          - set(attributes["smith.event.type"], attributes["event.name"]) where attributes["event.name"] != nil
+
+          # ============================================================
+          # NORMALIZE TIMESTAMP
+          # ============================================================
+          # Codex uses 'event.timestamp' (ISO string), Claude Code uses standard Timestamp
+          # Set smith.event.timestamp from either source
+          - set(attributes["smith.event.timestamp"], attributes["event.timestamp"]) where attributes["event.timestamp"] != nil
+
+          # ============================================================
+          # NORMALIZE USER ID
+          # ============================================================
+          # Codex: user.account_id
+          # Claude Code: user.account_uuid
+          # Normalize both to user.id
+          - set(attributes["user.id"], attributes["user.account_id"]) where attributes["user.account_id"] != nil
+          - set(attributes["user.id"], attributes["user.account_uuid"]) where attributes["user.account_uuid"] != nil
+
+          # ============================================================
+          # NORMALIZE MODEL NAME
+          # ============================================================
+          # Both agents use 'model' - map to gen_ai.request.model
+          - set(attributes["gen_ai.request.model"], attributes["model"]) where attributes["model"] != nil
+
+          # ============================================================
+          # NORMALIZE PROVIDER
+          # ============================================================
+          # Codex: provider_name
+          # Normalize to gen_ai.system
+          - set(attributes["gen_ai.system"], attributes["provider_name"]) where attributes["provider_name"] != nil
+
+          # ============================================================
+          # NORMALIZE TOKEN USAGE
+          # ============================================================
+          # Claude Code already uses correct names, but codex might not
+          # Map to gen_ai.usage.* convention
+          - set(attributes["gen_ai.usage.input_tokens"], attributes["input_tokens"]) where attributes["input_tokens"] != nil
+          - set(attributes["gen_ai.usage.output_tokens"], attributes["output_tokens"]) where attributes["output_tokens"] != nil
+          - set(attributes["gen_ai.usage.cache_read_tokens"], attributes["cache_read_tokens"]) where attributes["cache_read_tokens"] != nil
+          - set(attributes["gen_ai.usage.cache_creation_tokens"], attributes["cache_creation_tokens"]) where attributes["cache_creation_tokens"] != nil
+
+          # ============================================================
+          # NORMALIZE COST
+          # ============================================================
+          - set(attributes["gen_ai.cost.usd"], attributes["cost_usd"]) where attributes["cost_usd"] != nil
+
+          # ============================================================
+          # NORMALIZE DURATION
+          # ============================================================
+          # Both agents use duration_ms - map to smith.duration.ms
+          - set(attributes["smith.duration.ms"], attributes["duration_ms"]) where attributes["duration_ms"] != nil
+
+          # ============================================================
+          # NORMALIZE AGENT INFO
+          # ============================================================
+          # Map app.version to agent.version
+          - set(attributes["agent.version"], attributes["app.version"]) where attributes["app.version"] != nil
+
+          # Derive agent.name from service name
+          # Codex: ResourceAttributes['service.name'] = 'codex_exec'
+          # Claude Code: ResourceAttributes['service.name'] = 'smith-agent-claude'
+          - set(attributes["agent.name"], "codex") where resource.attributes["service.name"] == "codex_exec"
+          - set(attributes["agent.name"], "claude-code") where resource.attributes["service.name"] == "smith-agent-claude"
+
+          # Derive provider from model name if not set
+          - set(attributes["gen_ai.system"], "openai") where attributes["gen_ai.request.model"] != nil and (IsMatch(attributes["gen_ai.request.model"], "^gpt.*") or IsMatch(attributes["gen_ai.request.model"], ".*codex.*")) and attributes["gen_ai.system"] == nil
+          - set(attributes["gen_ai.system"], "anthropic") where attributes["gen_ai.request.model"] != nil and IsMatch(attributes["gen_ai.request.model"], ".*claude.*") and attributes["gen_ai.system"] == nil
+
+          # ============================================================
+          # NORMALIZE TOOL ATTRIBUTES
+          # ============================================================
+          # Claude Code: decision -> tool.action
+          - set(attributes["tool.action"], attributes["decision"]) where attributes["decision"] != nil
+
+          # ============================================================
+          # DERIVE EVENT CATEGORY
+          # ============================================================
+          # Categorize events based on event type
+          - set(attributes["smith.event.category"], "input") where attributes["smith.event.type"] != nil and (attributes["smith.event.type"] == "codex.user_prompt" or attributes["smith.event.type"] == "claude_code.user_prompt")
+          - set(attributes["smith.event.category"], "api") where attributes["smith.event.type"] != nil and (attributes["smith.event.type"] == "codex.api_request" or attributes["smith.event.type"] == "claude_code.api_request")
+          - set(attributes["smith.event.category"], "tool") where attributes["smith.event.type"] != nil and (attributes["smith.event.type"] == "codex.tool_decision" or attributes["smith.event.type"] == "claude_code.tool_decision" or attributes["smith.event.type"] == "claude_code.tool_result")
+          - set(attributes["smith.event.category"], "error") where attributes["smith.event.type"] != nil and (attributes["smith.event.type"] == "claude_code.api_error")
+
+  # Transform processor for metrics normalization
+  transform/normalize_metrics:
+    error_mode: ignore
+    metric_statements:
+      - context: metric
+        statements:
+          # Normalize metric names to smith.* namespace
+          # Claude Code metrics: claude_code.* -> smith.agent.claude_code.*
+          - set(name, Concat(["smith.agent.", name], "")) where name != nil
+
+  # Attributes processor to clean up sensitive data
+  attributes:
+    actions:
+      # Remove sensitive attributes that might have leaked through
+      - key: password
+        action: delete
+      - key: token
+        action: delete
+      - key: secret
+        action: delete
+      - key: api_key
+        action: delete
+
+  # Filter out noisy or unwanted telemetry
+  filter:
+    traces:
+      span:
+        - 'name == "health_check"'
+        - 'attributes["http.route"] == "/health"'
+    logs:
+      log_record:
+        - 'severity_text == "DEBUG" and resource.attributes["deployment.environment"] == "production"'
+
+exporters:
+  # ClickHouse exporter for OLAP storage
+  clickhouse:
+    endpoint: ${env:CLICKHOUSE_ENDPOINT}
+    database: ${env:CLICKHOUSE_DATABASE}
+    username: ${env:CLICKHOUSE_USERNAME}
+    password: ${env:CLICKHOUSE_PASSWORD}
+    timeout: 30s
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+    sending_queue:
+      enabled: true
+      num_consumers: 4
+      queue_size: 1000
+
+  # Logging exporter for debugging (optional)
+  logging:
+    verbosity: ${env:OTEL_LOG_VERBOSITY}
+    sampling_initial: 2
+    sampling_thereafter: 500
+
+  # Prometheus metrics exporter
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: smith
+    const_labels:
+      deployment_environment: ${env:DEPLOYMENT_ENVIRONMENT}
+
+service:
+  # Configure telemetry for the collector itself
+  telemetry:
+    logs:
+      level: ${env:OTEL_LOG_LEVEL}
+    metrics:
+      address: 0.0.0.0:8888
+
+  # Extension configuration
+  extensions:
+    - health_check
+    - pprof
+    - zpages
+
+  # Pipeline configuration
+  pipelines:
+    # Traces pipeline: OTLP -> processing -> ClickHouse
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, attributes, batch]
+      exporters: [clickhouse]
+
+    # Metrics pipeline: OTLP -> normalization -> processing -> ClickHouse & Prometheus
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, transform/normalize_metrics, batch]
+      exporters: [clickhouse, prometheus]
+
+    # Logs pipeline: OTLP & file -> NORMALIZATION -> processing -> ClickHouse
+    # THIS IS THE KEY PIPELINE - includes transform/normalize_logs
+    logs:
+      receivers: [otlp, filelog]
+      processors: [memory_limiter, resource, transform/normalize_logs, attributes, filter, batch]
+      exporters: [clickhouse]
+
+    # Infrastructure metrics pipeline: Prometheus scrape -> ClickHouse & Prometheus
+    # Separate from agent metrics to skip normalize_metrics transform
+    metrics/infra:
+      receivers: [prometheus]
+      processors: [memory_limiter, resource, batch]
+      exporters: [clickhouse, prometheus]
+
+    # Debug pipeline (only in development)
+    traces/debug:
+      receivers: [otlp]
+      processors: [memory_limiter]
+      exporters: [logging]
+
+    # Message capture pipeline: accept smith.observe.capture spans and send to ClickHouse
+    traces/messages:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [clickhouse]
+
+extensions:
+  # Health check extension
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+  # Performance profiling (development only)
+  pprof:
+    endpoint: 0.0.0.0:1777
+
+  # zPages for debugging
+  zpages:
+    endpoint: 0.0.0.0:55679

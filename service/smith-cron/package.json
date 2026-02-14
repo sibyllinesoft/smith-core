@@ -1,0 +1,11 @@
+{
+  "name": "smith-cron",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "croner": "^9.0.0",
+    "nats": "^2.29.1",
+    "pg": "^8.13.1"
+  }
+}

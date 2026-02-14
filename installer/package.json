@@ -1,0 +1,41 @@
+{
+  "name": "@sibyllinesoft/smith-installer",
+  "version": "0.1.0",
+  "description": "AI-guided Smith platform installer powered by pi-agent",
+  "type": "module",
+  "bin": {
+    "smith-install": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "agents.md",
+    "skills"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@mariozechner/pi-coding-agent": "^0.52.0",
+    "@mariozechner/pi-ai": "^0.52.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -1,0 +1,441 @@
+syntax = "proto3";
+
+package agentd.v1;
+
+// Agentd service provides secure command execution capabilities
+service Agentd {
+    // Execute a command and return the result
+    rpc Execute(ExecuteRequest) returns (ExecuteResponse);
+
+    // Execute a command with streaming output
+    rpc ExecuteStream(ExecuteRequest) returns (stream ExecuteOutput);
+
+    // List available capabilities
+    rpc ListCapabilities(ListCapabilitiesRequest) returns (ListCapabilitiesResponse);
+
+    // Health check
+    rpc Health(HealthRequest) returns (HealthResponse);
+
+    // Sandbox management
+    rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+    rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+    rpc AttachSandbox(AttachSandboxRequest) returns (AttachSandboxResponse);
+    rpc TerminateSandbox(TerminateSandboxRequest) returns (TerminateSandboxResponse);
+
+    // Introspection
+    rpc GetSandboxCapabilities(GetSandboxCapabilitiesRequest) returns (SandboxCapabilities);
+
+    // File operations (sandboxed)
+    rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+    rpc WriteFile(WriteFileRequest) returns (WriteFileResponse);
+    rpc EditFile(EditFileRequest) returns (EditFileResponse);
+}
+
+// Execute request
+message ExecuteRequest {
+    // Unique request identifier
+    string request_id = 1;
+
+    // Capability to invoke (e.g., "shell.exec.v1", "fs.read.v1")
+    string capability = 2;
+
+    // Capability version
+    uint32 version = 3;
+
+    // Capability-specific parameters (JSON)
+    string params_json = 4;
+
+    // Execution constraints
+    ExecutionConstraints constraints = 5;
+
+    // Sandbox preferences
+    SandboxPreferences sandbox_prefs = 6;
+
+    // Request metadata
+    RequestMetadata metadata = 7;
+}
+
+// Execution constraints
+message ExecutionConstraints {
+    // Maximum execution time in milliseconds
+    uint64 max_duration_ms = 1;
+
+    // Maximum output size in bytes
+    uint64 max_output_bytes = 2;
+
+    // Maximum memory usage in bytes
+    uint64 max_memory_bytes = 3;
+
+    // Allow network access
+    bool allow_network = 4;
+
+    // Allow filesystem writes
+    bool allow_writes = 5;
+}
+
+// Sandbox preferences
+message SandboxPreferences {
+    // Prefer a specific sandbox by ID
+    string sandbox_id = 1;
+
+    // Require a fresh sandbox
+    bool require_fresh = 2;
+
+    // Requested isolation profile
+    string profile = 3;
+
+    // Keep sandbox after execution
+    bool persist = 4;
+
+    // Preferred isolation backend
+    string backend = 5;
+}
+
+// Request metadata
+message RequestMetadata {
+    // Trace ID for distributed tracing
+    string trace_id = 1;
+
+    // Span ID
+    string span_id = 2;
+
+    // Idempotency key
+    string idempotency_key = 3;
+
+    // Priority (0-10)
+    uint32 priority = 4;
+
+    // Custom metadata
+    map<string, string> custom = 5;
+}
+
+// Execute response
+message ExecuteResponse {
+    // Request ID this responds to
+    string request_id = 1;
+
+    // Execution status
+    ExecutionStatus status = 2;
+
+    // Status code string
+    string code = 3;
+
+    // Human-readable message
+    string message = 4;
+
+    // Execution result (if successful)
+    ExecutionResult result = 5;
+
+    // Error details (if failed)
+    ErrorDetails error = 6;
+
+    // Timing information
+    ResponseTiming timing = 7;
+
+    // Sandbox information
+    SandboxInfo sandbox_info = 8;
+}
+
+// Execution status
+enum ExecutionStatus {
+    EXECUTION_STATUS_UNSPECIFIED = 0;
+    EXECUTION_STATUS_OK = 1;
+    EXECUTION_STATUS_DENIED = 2;
+    EXECUTION_STATUS_ERROR = 3;
+    EXECUTION_STATUS_EXPIRED = 4;
+    EXECUTION_STATUS_CANCELLED = 5;
+    EXECUTION_STATUS_PENDING = 6;
+}
+
+// Execution result
+message ExecutionResult {
+    // Exit code
+    int32 exit_code = 1;
+
+    // Standard output (text)
+    string stdout = 2;
+
+    // Standard output (bytes, for binary data)
+    bytes stdout_bytes = 3;
+
+    // Standard error
+    string stderr = 4;
+
+    // Structured output (JSON)
+    string output_json = 5;
+
+    // Generated artifacts
+    repeated Artifact artifacts = 6;
+
+    // Resource usage
+    ResourceUsage resource_usage = 7;
+}
+
+// Artifact
+message Artifact {
+    string name = 1;
+    string content_type = 2;
+    uint64 size = 3;
+    string sha256 = 4;
+    string uri = 5;
+    bytes content = 6;
+}
+
+// Resource usage
+message ResourceUsage {
+    uint64 peak_memory_bytes = 1;
+    uint64 cpu_time_ms = 2;
+    uint64 wall_time_ms = 3;
+    uint64 disk_write_bytes = 4;
+    uint64 disk_read_bytes = 5;
+    uint64 network_tx_bytes = 6;
+    uint64 network_rx_bytes = 7;
+}
+
+// Error details
+message ErrorDetails {
+    string code = 1;
+    string message = 2;
+    string details_json = 3;
+    bool retryable = 4;
+    uint64 retry_after_ms = 5;
+}
+
+// Response timing
+message ResponseTiming {
+    uint64 received_at_ms = 1;
+    uint64 started_at_ms = 2;
+    uint64 completed_at_ms = 3;
+    uint64 queue_time_ms = 4;
+    uint64 setup_time_ms = 5;
+    uint64 exec_time_ms = 6;
+    uint64 total_time_ms = 7;
+}
+
+// Sandbox info
+message SandboxInfo {
+    string sandbox_id = 1;
+    string backend = 2;
+    string profile = 3;
+    bool newly_created = 4;
+    SandboxCapabilities capabilities = 5;
+}
+
+// Streaming output
+message ExecuteOutput {
+    oneof output {
+        bytes stdout_chunk = 1;
+        bytes stderr_chunk = 2;
+        Progress progress = 3;
+        LogMessage log = 4;
+        ExecuteResponse complete = 5;
+    }
+}
+
+// Progress update
+message Progress {
+    float percent = 1;
+    string message = 2;
+}
+
+// Log message
+message LogMessage {
+    string level = 1;
+    string message = 2;
+    uint64 timestamp_ms = 3;
+}
+
+// List capabilities request
+message ListCapabilitiesRequest {}
+
+// List capabilities response
+message ListCapabilitiesResponse {
+    repeated CapabilityInfo capabilities = 1;
+}
+
+// Capability info
+message CapabilityInfo {
+    string name = 1;
+    string description = 2;
+    uint32 version = 3;
+    string param_schema_json = 4;
+    bool requires_elevated = 5;
+    bool supports_streaming = 6;
+    repeated string tags = 7;
+}
+
+// Health request
+message HealthRequest {}
+
+// Health response
+message HealthResponse {
+    bool healthy = 1;
+    string status = 2;
+    map<string, string> details = 3;
+}
+
+// List sandboxes request
+message ListSandboxesRequest {
+    // Optional filter by state
+    string state_filter = 1;
+}
+
+// List sandboxes response
+message ListSandboxesResponse {
+    repeated SandboxSummary sandboxes = 1;
+}
+
+// Sandbox summary
+message SandboxSummary {
+    string sandbox_id = 1;
+    string backend = 2;
+    string profile = 3;
+    string state = 4;
+    uint64 created_at_ms = 5;
+    uint64 last_active_at_ms = 6;
+}
+
+// Create sandbox request
+message CreateSandboxRequest {
+    // Isolation profile
+    string profile = 1;
+
+    // Working directory
+    string workdir = 2;
+
+    // Allowed read paths
+    repeated string allowed_paths_ro = 3;
+
+    // Allowed write paths
+    repeated string allowed_paths_rw = 4;
+
+    // Network enabled
+    bool network_enabled = 5;
+
+    // Resource limits
+    ResourceLimits limits = 6;
+
+    // Labels
+    map<string, string> labels = 7;
+}
+
+// Resource limits
+message ResourceLimits {
+    uint64 max_memory_bytes = 1;
+    uint64 max_cpu_time_ms = 2;
+    uint64 max_wall_time_ms = 3;
+    uint32 max_processes = 4;
+    uint32 max_open_files = 5;
+    uint64 max_output_bytes = 6;
+    uint64 max_write_bytes = 7;
+}
+
+// Create sandbox response
+message CreateSandboxResponse {
+    string sandbox_id = 1;
+    SandboxCapabilities capabilities = 2;
+}
+
+// Attach sandbox request
+message AttachSandboxRequest {
+    string sandbox_id = 1;
+    bool create_if_missing = 2;
+    CreateSandboxRequest create_spec = 3;
+}
+
+// Attach sandbox response
+message AttachSandboxResponse {
+    string session_id = 1;
+    string sandbox_id = 2;
+    bool newly_created = 3;
+    SandboxCapabilities capabilities = 4;
+}
+
+// Terminate sandbox request
+message TerminateSandboxRequest {
+    string sandbox_id = 1;
+    bool force = 2;
+}
+
+// Terminate sandbox response
+message TerminateSandboxResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// Get sandbox capabilities request
+message GetSandboxCapabilitiesRequest {
+    string sandbox_id = 1;
+}
+
+// Sandbox capabilities
+message SandboxCapabilities {
+    string sandbox_id = 1;
+    string backend = 2;
+    string profile = 3;
+    bool can_write_filesystem = 4;
+    repeated string readable_paths = 5;
+    repeated string writable_paths = 6;
+    bool has_network = 7;
+    repeated string allowed_destinations = 8;
+    ResourceLimits limits = 9;
+    bool syscall_filter_active = 10;
+    repeated string blocked_syscall_categories = 11;
+    bool is_persistent = 12;
+    uint64 created_at_ms = 13;
+    uint64 time_remaining_ms = 14;
+}
+
+// ============================================================================
+// File Operations (sandboxed)
+// ============================================================================
+
+// Read file request
+message ReadFileRequest {
+    string sandbox_id = 1;
+    string path = 2;
+    // Optional: read only a portion of the file
+    uint64 offset = 3;
+    uint64 limit = 4;  // 0 = no limit
+}
+
+// Read file response
+message ReadFileResponse {
+    bool success = 1;
+    string content = 2;
+    string error = 3;
+    uint64 size_bytes = 4;
+    bool truncated = 5;
+}
+
+// Write file request
+message WriteFileRequest {
+    string sandbox_id = 1;
+    string path = 2;
+    string content = 3;
+    bool create_dirs = 4;  // Create parent directories if needed
+    bool append = 5;       // Append instead of overwrite
+}
+
+// Write file response
+message WriteFileResponse {
+    bool success = 1;
+    string error = 2;
+    uint64 bytes_written = 3;
+}
+
+// Edit file request (search and replace)
+message EditFileRequest {
+    string sandbox_id = 1;
+    string path = 2;
+    string old_string = 3;
+    string new_string = 4;
+    bool replace_all = 5;  // Replace all occurrences
+}
+
+// Edit file response
+message EditFileResponse {
+    bool success = 1;
+    string error = 2;
+    uint32 replacements_made = 3;
+}

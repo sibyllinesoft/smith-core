@@ -1,0 +1,16 @@
+{
+  "name": "@sibyllinesoft/agentd-darwin-arm64",
+  "version": "0.1.0",
+  "description": "agentd binary for macOS arm64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sibyllinesoft/agentd"
+  },
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

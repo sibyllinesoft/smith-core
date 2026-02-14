@@ -1,0 +1,249 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/smith-protocol",
+    "crates/smith-bus",
+    "crates/smith-config",
+    "crates/smith-attestation",
+    "crates/smith-logging",
+    "crates/smith-jailer",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Smith Team"]
+license = "MIT"
+repository = "https://github.com/sibyllinesoft/agentd"
+homepage = "https://agentd.rs"
+
+[workspace.lints.rust]
+warnings = "allow"
+missing_docs = "allow"
+unsafe_code = "allow"  # Required for sandboxing operations
+unused_extern_crates = "warn"
+unused_import_braces = "allow"
+unused_imports = "allow"
+unused_qualifications = "warn"
+variant_size_differences = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Allow some common patterns
+bool_comparison = "allow"
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+
+[workspace.dependencies]
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chrono"] }
+clap = { version = "4.0", features = ["derive", "env"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+chrono = { version = "0.4", features = ["serde"] }
+futures = "0.3"
+async-nats = "0.42"
+tempfile = "3.0"
+tokio-retry = "0.3"
+async-trait = "0.1"
+prometheus = "0.14"
+sha2 = "0.10"
+once_cell = "1.21"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = true
+opt-level = 3
+overflow-checks = false
+debug-assertions = false
+incremental = false
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false
+debug-assertions = true
+
+[profile.bench]
+inherits = "release"
+debug = true
+lto = "thin"
+
+# Main agentd package
+[package]
+name = "agentd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Agent daemon for secure capability execution with pluggable isolation backends"
+keywords = ["agent", "daemon", "security", "sandbox", "isolation"]
+categories = ["command-line-utilities", "development-tools"]
+
+[lints.rust]
+warnings = "allow"
+missing_docs = "allow"
+unsafe_code = "allow"
+unused_extern_crates = "warn"
+unused_import_braces = "warn"
+unused_qualifications = "warn"
+variant_size_differences = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+[[bin]]
+name = "agentd"
+path = "src/main.rs"
+
+[[bin]]
+name = "fc-guest-agent"
+path = "src/bin/fc-guest-agent.rs"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+
+# Serialization
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+# Error handling
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+# Logging and tracing
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "json", "chrono"] }
+
+# CLI
+clap = { workspace = true, features = ["derive", "env"] }
+
+# Time and UUID
+uuid = { workspace = true, features = ["v4", "serde"] }
+chrono = { workspace = true, features = ["serde"] }
+
+# Configuration
+toml = "0.8"
+config = "0.14"
+
+# NATS client
+async-nats = { workspace = true }
+
+# Cryptography - Ed25519 signature verification
+ed25519-dalek = { version = "2.1", features = ["serde", "rand_core"] }
+base64 = "0.22"
+shell-escape = "0.1"
+sha2 = { workspace = true }
+
+# JSON Schema validation
+jsonschema = "0.17"
+
+# CEL policy engine
+cel-interpreter = "0.4"
+
+# JWT decoding for audit logging
+jsonwebtoken = "9.3"
+
+# Database for idempotency
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "uuid", "migrate"], default-features = false }
+
+# Security and sandboxing
+libc = "0.2"
+nix = { version = "0.29", features = ["process", "mount", "user", "fs", "sched"] }
+
+# Metrics
+prometheus = { workspace = true }
+once_cell = { workspace = true }
+
+# Compression for audit logs
+zstd = "0.13"
+
+# HTTP client for egress
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+
+# Web framework for health endpoints
+warp = "0.3"
+
+# Internal crates
+smith-protocol = { path = "crates/smith-protocol", version = "0.1.0" }
+smith-bus = { path = "crates/smith-bus", version = "0.1.0" }
+smith-config = { path = "crates/smith-config", version = "0.1.0" }
+smith-attestation = { path = "crates/smith-attestation", version = "0.1.0" }
+smith-logging = { path = "crates/smith-logging", version = "0.1.0" }
+smith-jailer = { path = "crates/smith-jailer", version = "0.1.0" }
+
+# Additional dependencies
+hex = "0.4"
+regex = "1.10"
+rand_core = "0.6"
+rand = "0.8"
+url = "2.0"
+gethostname = "0.4"
+async-trait = { workspace = true }
+
+# Planner-Executor Controller dependencies
+dashmap = "6.0"
+tokio-util = "0.7"
+bytes = "1.0"
+arc-swap = "1.7"
+regorus = "0.5"
+parking_lot = "0.12"
+
+# Rate limiting and caching
+governor = "0.6"
+moka = { version = "0.12", features = ["future"] }
+
+# Temporary directories for testing
+tempfile = { workspace = true }
+
+# Bitflags for security configuration
+bitflags = "2.0"
+
+# Archive processing
+zip = "0.6"
+tar = "0.4"
+flate2 = "1.0"
+
+# gRPC (optional, for direct mode)
+tonic = { version = "0.12", optional = true }
+prost = { version = "0.13", optional = true }
+prost-types = { version = "0.13", optional = true }
+tokio-stream = { version = "0.1", optional = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+test-log = "0.2"
+pretty_assertions = "1.0"
+
+[build-dependencies]
+tonic-build = { version = "0.12", optional = true }
+
+[[example]]
+name = "test_isolation_demo"
+path = "examples/test_isolation_demo.rs"
+
+[features]
+default = ["landlock"]
+landlock = []
+grpc = ["tonic", "prost", "prost-types", "tonic-build", "tokio-stream"]

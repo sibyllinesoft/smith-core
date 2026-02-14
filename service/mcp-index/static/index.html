@@ -1,0 +1,1762 @@
+<!--
+  MCP Tool Index UI
+  Design patterns adapted from the official MCP Inspector
+  (https://github.com/modelcontextprotocol/inspector, MIT License)
+  by the Model Context Protocol team.
+-->
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MCP Tool Index</title>
+    <style>
+      /* ── Reset ─────────────────────────────────────────── */
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      /* ── HSL Custom Properties (Inspector-style) ───────── */
+      :root {
+        --background: 0 0% 100%;
+        --foreground: 222.2 84% 4.9%;
+        --card: 0 0% 100%;
+        --card-foreground: 222.2 84% 4.9%;
+        --primary: 222.2 47.4% 11.2%;
+        --primary-foreground: 210 40% 98%;
+        --secondary: 210 40% 96.1%;
+        --secondary-foreground: 222.2 47.4% 11.2%;
+        --muted: 210 40% 96.1%;
+        --muted-foreground: 215.4 16.3% 46.9%;
+        --accent: 210 40% 96.1%;
+        --accent-foreground: 222.2 47.4% 11.2%;
+        --border: 214.3 31.8% 91.4%;
+        --input: 214.3 31.8% 91.4%;
+        --ring: 222.2 84% 4.9%;
+        --destructive: 0 84.2% 60.2%;
+        --success: 142 76% 36%;
+        --warning: 38 92% 50%;
+        --radius: 0.5rem;
+        --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+        --font-mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+        color-scheme: light;
+      }
+
+      .dark {
+        --background: 222.2 84% 4.9%;
+        --foreground: 210 40% 98%;
+        --card: 217.2 32.6% 11%;
+        --card-foreground: 210 40% 98%;
+        --primary: 210 40% 98%;
+        --primary-foreground: 222.2 47.4% 11.2%;
+        --secondary: 217.2 32.6% 17.5%;
+        --secondary-foreground: 210 40% 98%;
+        --muted: 217.2 32.6% 17.5%;
+        --muted-foreground: 215 20.2% 65.1%;
+        --accent: 217.2 32.6% 17.5%;
+        --accent-foreground: 210 40% 98%;
+        --border: 217.2 24% 24%;
+        --input: 217.2 24% 24%;
+        --ring: 212.7 26.8% 83.9%;
+        --destructive: 0 62.8% 30.6%;
+        --success: 142 70% 45%;
+        --warning: 38 92% 50%;
+        color-scheme: dark;
+      }
+
+      /* ── Base ───────────────────────────────────────────── */
+      html, body { height: 100%; overflow: hidden; }
+      body {
+        font-family: var(--font-sans);
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        display: flex;
+        flex-direction: column;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      /* ── Scrollbar styling ─────────────────────────────── */
+      ::-webkit-scrollbar { width: 6px; height: 6px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb {
+        background: hsl(var(--muted-foreground) / 0.25);
+        border-radius: 3px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: hsl(var(--muted-foreground) / 0.4);
+      }
+
+      /* ── Header ────────────────────────────────────────── */
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 12px 20px;
+        border-bottom: 1px solid hsl(var(--border));
+        flex-shrink: 0;
+        background: hsl(var(--card));
+      }
+      .header-title {
+        font-size: 15px;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        white-space: nowrap;
+      }
+      .status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex-shrink: 0;
+      }
+      .status-dot.ok { background: hsl(var(--success)); box-shadow: 0 0 6px hsl(var(--success) / 0.5); }
+      .status-dot.fail { background: hsl(var(--destructive)); box-shadow: 0 0 6px hsl(var(--destructive) / 0.5); }
+      .status-dot.unknown { background: hsl(var(--muted-foreground)); }
+      .header-meta {
+        font-size: 12px;
+        color: hsl(var(--muted-foreground));
+        white-space: nowrap;
+        cursor: pointer;
+        padding: 4px 8px;
+        border-radius: var(--radius);
+        transition: background 0.12s, color 0.12s;
+        margin-left: auto;
+      }
+      .header-meta:hover {
+        background: hsl(var(--accent));
+        color: hsl(var(--foreground));
+      }
+
+      /* ── Server Status Modal ───────────────────────────── */
+      .modal-overlay {
+        display: none;
+        position: fixed;
+        inset: 0;
+        background: hsl(var(--background) / 0.6);
+        z-index: 100;
+        align-items: center;
+        justify-content: center;
+      }
+      .modal-overlay.open { display: flex; }
+      .modal {
+        background: hsl(var(--card));
+        border: 1px solid hsl(var(--border));
+        border-radius: calc(var(--radius) * 2);
+        padding: 20px;
+        min-width: 340px;
+        max-width: 480px;
+        max-height: 70vh;
+        overflow-y: auto;
+        box-shadow: 0 16px 48px hsl(var(--background) / 0.5);
+      }
+      .modal-title {
+        font-size: 14px;
+        font-weight: 600;
+        margin-bottom: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .modal-close {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 24px;
+        height: 24px;
+        border: none;
+        background: none;
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        border-radius: var(--radius);
+        transition: background 0.12s, color 0.12s;
+      }
+      .modal-close:hover { background: hsl(var(--accent)); color: hsl(var(--foreground)); }
+      .modal-close svg { width: 14px; height: 14px; }
+      .modal-server {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 0;
+        border-bottom: 1px solid hsl(var(--border));
+      }
+      .modal-server:last-child { border-bottom: none; }
+      .modal-server-name {
+        font-size: 13px;
+        font-weight: 600;
+        font-family: var(--font-mono);
+        flex: 1;
+      }
+      .modal-server-info {
+        font-size: 11px;
+        color: hsl(var(--muted-foreground));
+      }
+      .modal-server-error {
+        font-size: 11px;
+        color: hsl(var(--destructive));
+        margin-top: 2px;
+      }
+      .header-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex-shrink: 0;
+      }
+
+      /* ── Icon buttons ──────────────────────────────────── */
+      .icon-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border: 1px solid hsl(var(--border));
+        border-radius: var(--radius);
+        background: hsl(var(--card));
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        transition: color 0.15s, background 0.15s, border-color 0.15s;
+      }
+      .icon-btn:hover {
+        color: hsl(var(--foreground));
+        background: hsl(var(--accent));
+      }
+      .icon-btn svg { width: 16px; height: 16px; }
+
+      /* ── Main Layout ───────────────────────────────────── */
+      .main-layout {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+      }
+
+      /* ── Left: Tool List Panel ─────────────────────────── */
+      .tool-list-panel {
+        width: 380px;
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid hsl(var(--border));
+        background: hsl(var(--card));
+      }
+      .search-bar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid hsl(var(--border));
+        flex-shrink: 0;
+      }
+      .search-bar svg {
+        width: 16px;
+        height: 16px;
+        color: hsl(var(--muted-foreground));
+        flex-shrink: 0;
+      }
+      .search-bar input {
+        flex: 1;
+        border: none;
+        background: transparent;
+        color: hsl(var(--foreground));
+        font-family: var(--font-sans);
+        font-size: 13px;
+        outline: none;
+      }
+      .search-bar input::placeholder {
+        color: hsl(var(--muted-foreground));
+      }
+      .search-clear {
+        display: none;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        border: none;
+        background: none;
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        border-radius: 4px;
+        flex-shrink: 0;
+        padding: 0;
+        transition: color 0.12s, background 0.12s;
+      }
+      .search-clear:hover {
+        color: hsl(var(--foreground));
+        background: hsl(var(--accent));
+      }
+      .search-clear svg { width: 14px; height: 14px; }
+      .search-clear.visible { display: inline-flex; }
+      .search-bar select {
+        font-family: var(--font-sans);
+        font-size: 12px;
+        padding: 3px 6px;
+        border: 1px solid hsl(var(--border));
+        border-radius: var(--radius);
+        background: hsl(var(--card));
+        color: hsl(var(--foreground));
+        outline: none;
+        cursor: pointer;
+      }
+      .tool-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 4px;
+      }
+      .tool-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: var(--radius);
+        cursor: pointer;
+        transition: background 0.12s;
+        border: 1px solid transparent;
+      }
+      .tool-row:hover {
+        background: hsl(var(--accent));
+      }
+      .tool-row.active {
+        background: hsl(var(--accent));
+        border-color: hsl(var(--ring) / 0.3);
+      }
+      .tool-row-content {
+        flex: 1;
+        min-width: 0;
+      }
+      .tool-row-name {
+        font-size: 13px;
+        font-weight: 600;
+        font-family: var(--font-mono);
+        color: hsl(var(--foreground));
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .tool-row-desc {
+        font-size: 12px;
+        color: hsl(var(--muted-foreground));
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        flex: 1;
+      }
+      .tool-row-chevron {
+        color: hsl(var(--muted-foreground) / 0.5);
+        flex-shrink: 0;
+      }
+      .tool-row-chevron svg { width: 16px; height: 16px; }
+      .no-tools {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: hsl(var(--muted-foreground));
+        font-size: 13px;
+        padding: 24px;
+        text-align: center;
+      }
+
+      /* ── Server Groups in Tool List ───────────────────── */
+      .server-group { }
+      .server-group-header {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 6px 4px;
+        cursor: pointer;
+        user-select: none;
+        border-radius: var(--radius);
+        transition: background 0.12s;
+      }
+      .server-group-header:hover { background: hsl(var(--accent)); }
+      .server-group-chevron {
+        transition: transform 0.15s;
+        flex-shrink: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 16px;
+      }
+      .server-group-chevron svg { width: 14px; height: 14px; }
+      .server-group-chevron.open { transform: rotate(90deg); }
+      .server-group-name {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        flex: 1;
+        line-height: 16px;
+      }
+      .server-group-header.ok { color: hsl(var(--success)); }
+      .server-group-header.fail { color: hsl(var(--destructive)); }
+      .server-group-count {
+        font-size: 11px;
+        line-height: 16px;
+      }
+      .server-group-login {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border: 1px solid hsl(var(--border));
+        border-radius: 4px;
+        background: transparent;
+        color: hsl(var(--warning));
+        cursor: pointer;
+        transition: background 0.12s, color 0.12s;
+        flex-shrink: 0;
+        padding: 0;
+      }
+      .server-group-login:hover {
+        background: hsl(var(--warning) / 0.15);
+        color: hsl(var(--warning));
+      }
+      .server-group-login svg { width: 13px; height: 13px; }
+      .server-group-error {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border: none;
+        border-radius: 4px;
+        background: transparent;
+        color: hsl(var(--destructive));
+        cursor: help;
+        flex-shrink: 0;
+        padding: 0;
+      }
+      .server-group-error svg { width: 13px; height: 13px; }
+      .server-group-tools { padding-left: 12px; }
+      .server-group.collapsed .server-group-tools { display: none; }
+      .server-group.collapsed .server-group-chevron { transform: rotate(0deg); }
+
+      /* ── Right: Detail + History ────────────────────────── */
+      .right-panel {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+      }
+
+      /* ── Detail Panel ──────────────────────────────────── */
+      .detail-panel {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 20px 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .detail-empty {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        color: hsl(var(--muted-foreground));
+        gap: 8px;
+      }
+      .detail-empty svg { width: 40px; height: 40px; opacity: 0.3; }
+      .detail-empty-text { font-size: 13px; }
+
+      .detail-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-shrink: 0;
+      }
+      .detail-title {
+        font-size: 16px;
+        font-weight: 600;
+        font-family: var(--font-mono);
+      }
+      .detail-server-badge {
+        font-size: 11px;
+        font-weight: 500;
+        padding: 2px 8px;
+        border-radius: 4px;
+        background: hsl(var(--secondary));
+        color: hsl(var(--muted-foreground));
+      }
+      .detail-description {
+        font-size: 13px;
+        color: hsl(var(--muted-foreground));
+        line-height: 1.6;
+        flex-shrink: 0;
+      }
+
+      /* ── Form Controls ─────────────────────────────────── */
+      .form-section {
+        flex-shrink: 0;
+      }
+      .form-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .form-section-label {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: hsl(var(--muted-foreground));
+      }
+      .toggle-btn {
+        font-family: var(--font-sans);
+        font-size: 11px;
+        font-weight: 500;
+        padding: 3px 8px;
+        border-radius: var(--radius);
+        border: 1px solid hsl(var(--border));
+        background: hsl(var(--card));
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        transition: color 0.12s, border-color 0.12s;
+      }
+      .toggle-btn:hover {
+        color: hsl(var(--foreground));
+        border-color: hsl(var(--ring) / 0.3);
+      }
+      .form-fields {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .field-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+      .field-label {
+        font-size: 12px;
+        font-weight: 500;
+        color: hsl(var(--foreground));
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .field-label .req {
+        color: hsl(var(--destructive));
+      }
+      .field-label .field-type {
+        font-size: 11px;
+        color: hsl(var(--muted-foreground));
+        font-weight: 400;
+      }
+      .field-hint {
+        font-size: 11px;
+        color: hsl(var(--muted-foreground));
+      }
+      .field-input,
+      .field-textarea,
+      .field-select {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        padding: 7px 10px;
+        border-radius: var(--radius);
+        border: 1px solid hsl(var(--input));
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        outline: none;
+        transition: border-color 0.15s;
+      }
+      .field-input:focus,
+      .field-textarea:focus,
+      .field-select:focus {
+        border-color: hsl(var(--ring) / 0.5);
+        box-shadow: 0 0 0 2px hsl(var(--ring) / 0.1);
+      }
+      .field-textarea {
+        resize: vertical;
+        min-height: 60px;
+        line-height: 1.5;
+      }
+      .field-select { cursor: pointer; }
+      .field-checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .field-checkbox {
+        width: 16px;
+        height: 16px;
+        accent-color: hsl(var(--ring));
+        cursor: pointer;
+      }
+      .raw-json-editor {
+        font-family: var(--font-mono);
+        font-size: 13px;
+        padding: 12px;
+        border-radius: var(--radius);
+        border: 1px solid hsl(var(--input));
+        background: hsl(var(--background));
+        color: hsl(var(--foreground));
+        outline: none;
+        resize: vertical;
+        min-height: 120px;
+        line-height: 1.5;
+        tab-size: 2;
+      }
+      .raw-json-editor:focus {
+        border-color: hsl(var(--ring) / 0.5);
+        box-shadow: 0 0 0 2px hsl(var(--ring) / 0.1);
+      }
+      .no-params {
+        font-size: 12px;
+        color: hsl(var(--muted-foreground));
+        padding: 12px;
+        text-align: center;
+        border: 1px dashed hsl(var(--border));
+        border-radius: var(--radius);
+      }
+
+      /* ── Execute button ────────────────────────────────── */
+      .exec-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .exec-btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-sans);
+        font-size: 13px;
+        font-weight: 600;
+        padding: 8px 16px;
+        border-radius: var(--radius);
+        border: none;
+        background: hsl(var(--primary));
+        color: hsl(var(--primary-foreground));
+        cursor: pointer;
+        transition: opacity 0.12s;
+      }
+      .exec-btn:hover { opacity: 0.9; }
+      .exec-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+      .exec-btn svg { width: 14px; height: 14px; }
+      .exec-btn .spinner {
+        animation: spin 0.8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+
+      /* ── Result Viewer ─────────────────────────────────── */
+      .result-section {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        flex-shrink: 0;
+      }
+      .result-section.show { display: flex; }
+      .result-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+      .result-status {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .result-status.ok { color: hsl(var(--success)); }
+      .result-status.err { color: hsl(var(--destructive)); }
+      .result-copy-btn {
+        font-family: var(--font-sans);
+        font-size: 11px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 3px 8px;
+        border-radius: var(--radius);
+        border: 1px solid hsl(var(--border));
+        background: hsl(var(--card));
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        transition: color 0.12s;
+      }
+      .result-copy-btn:hover { color: hsl(var(--foreground)); }
+      .result-copy-btn svg { width: 12px; height: 12px; }
+
+      /* ── JSON Tree Viewer ──────────────────────────────── */
+      .json-tree {
+        font-family: var(--font-mono);
+        font-size: 12px;
+        line-height: 1.6;
+        padding: 12px;
+        border-radius: var(--radius);
+        background: hsl(var(--background));
+        border: 1px solid hsl(var(--border));
+        overflow-x: auto;
+        overflow-y: auto;
+        max-height: 400px;
+      }
+      .jt-row {
+        display: flex;
+        align-items: flex-start;
+        position: relative;
+        padding-left: calc(var(--depth, 0) * 16px);
+      }
+      .jt-row:hover > .jt-copy-btn { opacity: 1; }
+      .jt-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        color: hsl(var(--muted-foreground));
+        flex-shrink: 0;
+        margin-top: 2px;
+        user-select: none;
+        border: none;
+        background: none;
+        padding: 0;
+      }
+      .jt-toggle svg { width: 12px; height: 12px; }
+      .jt-key {
+        color: hsl(var(--foreground));
+        margin-right: 4px;
+      }
+      .jt-colon {
+        color: hsl(var(--muted-foreground));
+        margin-right: 6px;
+      }
+      .jt-string { color: hsl(142 70% 45%); }
+      .jt-number { color: hsl(213 80% 60%); }
+      .jt-boolean { color: hsl(38 90% 55%); }
+      .jt-null { color: hsl(280 60% 65%); }
+      .jt-bracket {
+        color: hsl(var(--muted-foreground));
+      }
+      .jt-ellipsis {
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+      }
+      .jt-size {
+        font-size: 11px;
+        color: hsl(var(--muted-foreground) / 0.6);
+        margin-left: 6px;
+      }
+      .jt-copy-btn {
+        opacity: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        border: none;
+        background: none;
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        margin-left: 4px;
+        flex-shrink: 0;
+        transition: opacity 0.12s;
+        padding: 0;
+      }
+      .jt-copy-btn:hover { color: hsl(var(--foreground)); }
+      .jt-copy-btn svg { width: 12px; height: 12px; }
+      .jt-indent-line {
+        position: absolute;
+        left: calc(var(--depth, 0) * 16px - 8px);
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: hsl(var(--border));
+      }
+
+      /* ── History Pane ──────────────────────────────────── */
+      .history-pane {
+        border-top: 1px solid hsl(var(--border));
+        background: hsl(var(--card));
+        flex-shrink: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .history-pane.collapsed .history-body { display: none; }
+      .history-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 6px 16px;
+        cursor: pointer;
+        user-select: none;
+        border-bottom: 1px solid hsl(var(--border));
+        flex-shrink: 0;
+      }
+      .history-header:hover { background: hsl(var(--accent)); }
+      .history-header-left {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 600;
+        color: hsl(var(--muted-foreground));
+      }
+      .history-header-left svg { width: 14px; height: 14px; }
+      .history-badge {
+        font-size: 10px;
+        font-weight: 600;
+        padding: 1px 6px;
+        border-radius: 9999px;
+        background: hsl(var(--secondary));
+        color: hsl(var(--muted-foreground));
+      }
+      .history-clear-btn {
+        font-family: var(--font-sans);
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: var(--radius);
+        border: 1px solid hsl(var(--border));
+        background: transparent;
+        color: hsl(var(--muted-foreground));
+        cursor: pointer;
+        transition: color 0.12s;
+      }
+      .history-clear-btn:hover { color: hsl(var(--destructive)); }
+      .history-body {
+        max-height: 200px;
+        overflow-y: auto;
+        font-size: 12px;
+      }
+      .history-entry {
+        border-bottom: 1px solid hsl(var(--border));
+      }
+      .history-entry:last-child { border-bottom: none; }
+      .history-entry-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 16px;
+        cursor: pointer;
+        transition: background 0.1s;
+      }
+      .history-entry-header:hover { background: hsl(var(--accent)); }
+      .history-entry-num {
+        font-weight: 600;
+        color: hsl(var(--muted-foreground));
+        font-family: var(--font-mono);
+        font-size: 11px;
+        min-width: 24px;
+      }
+      .history-entry-tool {
+        font-family: var(--font-mono);
+        font-weight: 500;
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .history-entry-status {
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .history-entry-status.ok { color: hsl(var(--success)); }
+      .history-entry-status.err { color: hsl(var(--destructive)); }
+      .history-entry-time {
+        font-size: 11px;
+        color: hsl(var(--muted-foreground));
+      }
+      .history-entry-chevron {
+        color: hsl(var(--muted-foreground));
+        transition: transform 0.12s;
+      }
+      .history-entry-chevron svg { width: 14px; height: 14px; }
+      .history-entry.expanded .history-entry-chevron { transform: rotate(90deg); }
+      .history-entry-detail {
+        display: none;
+        padding: 8px 16px 12px 48px;
+      }
+      .history-entry.expanded .history-entry-detail { display: block; }
+      .history-detail-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: hsl(var(--muted-foreground));
+        margin: 6px 0 4px 0;
+      }
+      .history-detail-label:first-child { margin-top: 0; }
+      .history-detail-json {
+        font-family: var(--font-mono);
+        font-size: 11px;
+        padding: 8px;
+        border-radius: var(--radius);
+        background: hsl(var(--background));
+        border: 1px solid hsl(var(--border));
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 200px;
+        overflow-y: auto;
+        line-height: 1.5;
+      }
+
+      /* ── Empty history state ───────────────────────────── */
+      .history-empty {
+        padding: 16px;
+        text-align: center;
+        color: hsl(var(--muted-foreground) / 0.6);
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body class="dark">
+    <!-- ── Header ──────────────────────────────────────── -->
+    <div class="header">
+      <div class="header-title">MCP Tool Index</div>
+      <div class="header-meta" id="status-line">loading&hellip;</div>
+      <div class="header-actions">
+        <button class="icon-btn" id="theme-toggle" title="Toggle theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- ── Main ────────────────────────────────────────── -->
+    <div class="main-layout">
+      <!-- Left: Tool List -->
+      <div class="tool-list-panel">
+        <div class="search-bar">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input type="text" id="search-input" placeholder="Search tools..." />
+          <button class="search-clear" id="search-clear" title="Clear search"><svg width="14" height="14"><use href="#icon-x"/></svg></button>
+        </div>
+        <div class="tool-list" id="tool-list">
+          <div class="no-tools">Loading tools&hellip;</div>
+        </div>
+      </div>
+
+      <!-- Right: Detail + History -->
+      <div class="right-panel">
+        <div class="detail-panel" id="detail-panel">
+          <div class="detail-empty" id="detail-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+            </svg>
+            <div class="detail-empty-text">Select a tool to inspect</div>
+          </div>
+        </div>
+
+        <!-- History Pane -->
+        <div class="history-pane collapsed" id="history-pane">
+          <div class="history-header" id="history-header">
+            <div class="history-header-left">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="9 18 15 12 9 6"/>
+              </svg>
+              <span>History</span>
+              <span class="history-badge" id="history-count">0</span>
+            </div>
+            <button class="history-clear-btn" id="history-clear">Clear</button>
+          </div>
+          <div class="history-body" id="history-body">
+            <div class="history-empty">No tool calls yet</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Server Status Modal ──────────────────────── -->
+    <div class="modal-overlay" id="modal-overlay">
+      <div class="modal">
+        <div class="modal-title">
+          <span>Server Status</span>
+          <button class="modal-close" id="modal-close">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+            </svg>
+          </button>
+        </div>
+        <div id="modal-body"></div>
+      </div>
+    </div>
+
+    <!-- ── SVG Icon Templates (hidden) ───────────────── -->
+    <svg xmlns="http://www.w3.org/2000/svg" style="display:none">
+      <symbol id="icon-chevron-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9 18 15 12 9 6"/>
+      </symbol>
+      <symbol id="icon-chevron-down" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="6 9 12 15 18 9"/>
+      </symbol>
+      <symbol id="icon-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m22 2-7 20-4-9-9-4z"/><path d="m22 2-10 10"/>
+      </symbol>
+      <symbol id="icon-loader" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+      </symbol>
+      <symbol id="icon-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+      </symbol>
+      <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+      </symbol>
+      <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+      </symbol>
+      <symbol id="icon-log-in" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/>
+      </symbol>
+      <symbol id="icon-alert-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </symbol>
+    </svg>
+
+    <script>
+    (() => {
+      'use strict';
+
+      // ── Helpers ──────────────────────────────────────────
+      const $ = (s, p) => (p || document).querySelector(s);
+      const $$ = (s, p) => [...(p || document).querySelectorAll(s)];
+      const esc = (s) => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
+      const icon = (name, cls) => `<svg class="${cls || ''}" width="16" height="16"><use href="#icon-${name}"/></svg>`;
+
+      // ── State ────────────────────────────────────────────
+      let allTools = [];
+      let cachedServers = [];
+      let collapsedGroups = new Set();
+      let activeTool = null;
+      let history = [];
+      let historyCounter = 0;
+      let formMode = 'form'; // 'form' | 'json'
+      let rawJsonBuffer = '{}';
+
+      // ── Theme ────────────────────────────────────────────
+      const themeBtn = $('#theme-toggle');
+      function setTheme(dark) {
+        document.body.classList.toggle('dark', dark);
+        themeBtn.innerHTML = dark
+          ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>`
+          : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>`;
+        themeBtn.title = dark ? 'Switch to light mode' : 'Switch to dark mode';
+        localStorage.setItem('mcp-theme', dark ? 'dark' : 'light');
+      }
+      themeBtn.addEventListener('click', () => setTheme(!document.body.classList.contains('dark')));
+      const saved = localStorage.getItem('mcp-theme');
+      if (saved === 'light') setTheme(false);
+
+      // ── Data loading ─────────────────────────────────────
+      async function loadServers() {
+        try {
+          const r = await fetch('api/servers');
+          cachedServers = await r.json();
+          allTools = cachedServers.flatMap(s => s.tools || []);
+          renderToolList();
+          updateStatusLine();
+        } catch (e) {
+          $('#status-line').textContent = 'error loading data';
+        }
+      }
+
+      function updateStatusLine() {
+        const total = cachedServers.length;
+        const healthy = cachedServers.filter(s => s.healthy).length;
+        const tools = allTools.length;
+        const status = healthy === total ? 'all healthy' : `${healthy}/${total} healthy`;
+        $('#status-line').textContent = `${total} server${total !== 1 ? 's' : ''} \u00b7 ${tools} tool${tools !== 1 ? 's' : ''} \u00b7 ${status}`;
+      }
+
+      // ── Tool List ────────────────────────────────────────
+      function renderToolList() {
+        const q = $('#search-input').value.toLowerCase();
+        const filtered = allTools.filter(t => {
+          if (q && !t.name.toLowerCase().includes(q)
+               && !(t.description || '').toLowerCase().includes(q)
+               && !t.server.toLowerCase().includes(q)) return false;
+          return true;
+        });
+        const list = $('#tool-list');
+
+        // Group by server, preserving server order from cachedServers
+        const groups = new Map();
+        // Seed all servers so unhealthy ones always appear
+        for (const s of cachedServers) {
+          if (!q || s.name.toLowerCase().includes(q)) {
+            groups.set(s.name, []);
+          }
+        }
+        for (const t of filtered) {
+          if (!groups.has(t.server)) groups.set(t.server, []);
+          groups.get(t.server).push(t);
+        }
+
+        if (!groups.size) {
+          list.innerHTML = `<div class="no-tools">No matching tools</div>`;
+          return;
+        }
+
+        // Build server lookup
+        const serverMap = new Map();
+        for (const s of cachedServers) serverMap.set(s.name, s);
+
+        let html = '';
+        for (const [server, tools] of groups) {
+          const s = serverMap.get(server) || {};
+          const isCollapsed = collapsedGroups.has(server);
+          const healthy = s.healthy;
+          const needsAuth = s.needs_auth;
+
+          // Action button: login for oauth servers, error icon for other unhealthy
+          let actionBtn = '';
+          if (needsAuth) {
+            actionBtn = `<button class="server-group-login" data-server="${esc(server)}" title="Login to ${esc(server)}">${icon('log-in')}</button>`;
+          } else if (!healthy && s.error) {
+            actionBtn = `<span class="server-group-error" title="${esc(s.error)}">${icon('alert-circle')}</span>`;
+          }
+
+          html += `<div class="server-group${isCollapsed ? ' collapsed' : ''}" data-group="${esc(server)}">` +
+            `<div class="server-group-header ${healthy ? 'ok' : 'fail'}">` +
+              `<span class="server-group-chevron${isCollapsed ? '' : ' open'}">${icon('chevron-right')}</span>` +
+              `<span class="server-group-name">${esc(server)}</span>` +
+              actionBtn +
+              `<span class="server-group-count">${tools.length}</span>` +
+            `</div>` +
+            `<div class="server-group-tools">`;
+          for (const t of tools) {
+            const isActive = activeTool && activeTool.name === t.name && activeTool.server === t.server;
+            html += `<div class="tool-row${isActive ? ' active' : ''}" data-tool="${esc(t.name)}" data-server="${esc(t.server)}">` +
+              `<div class="tool-row-content">` +
+                `<div class="tool-row-name">${esc(t.name)}</div>` +
+                `<span class="tool-row-desc">${esc(t.description || '')}</span>` +
+              `</div>` +
+              `<span class="tool-row-chevron">${icon('chevron-right')}</span>` +
+            `</div>`;
+          }
+          html += `</div></div>`;
+        }
+        list.innerHTML = html;
+      }
+
+      // ── Tool List Click ──────────────────────────────────
+      $('#tool-list').addEventListener('click', (e) => {
+        // OAuth login button
+        const loginBtn = e.target.closest('.server-group-login');
+        if (loginBtn) {
+          e.stopPropagation();
+          const serverName = loginBtn.dataset.server;
+          startOAuth(serverName);
+          return;
+        }
+        // Server group expand/collapse
+        const groupHeader = e.target.closest('.server-group-header');
+        if (groupHeader) {
+          const group = groupHeader.closest('.server-group');
+          const server = group.dataset.group;
+          if (collapsedGroups.has(server)) {
+            collapsedGroups.delete(server);
+          } else {
+            collapsedGroups.add(server);
+          }
+          renderToolList();
+          return;
+        }
+        // Tool selection
+        const row = e.target.closest('.tool-row');
+        if (!row) return;
+        const tool = allTools.find(t => t.name === row.dataset.tool && t.server === row.dataset.server);
+        if (tool) openDetail(tool);
+      });
+
+      // ── OAuth ──────────────────────────────────────────────
+      async function startOAuth(serverName) {
+        try {
+          const r = await fetch('/api/auth/start?server=' + encodeURIComponent(serverName));
+          if (!r.ok) {
+            const err = await r.json().catch(() => ({}));
+            alert(err.error || 'Failed to start OAuth');
+            return;
+          }
+          const { url } = await r.json();
+          window.open(url, 'oauth-' + serverName, 'width=600,height=700');
+        } catch (e) {
+          alert('OAuth error: ' + e.message);
+        }
+      }
+
+      window.addEventListener('message', (e) => {
+        if (e.data && e.data.type === 'oauth-complete') {
+          loadServers();
+        }
+      });
+
+      const searchInput = $('#search-input');
+      const searchClear = $('#search-clear');
+      searchInput.addEventListener('input', () => {
+        searchClear.classList.toggle('visible', searchInput.value.length > 0);
+        renderToolList();
+      });
+      searchClear.addEventListener('click', () => {
+        searchInput.value = '';
+        searchClear.classList.remove('visible');
+        renderToolList();
+        searchInput.focus();
+      });
+
+      // ── Detail Panel ─────────────────────────────────────
+      function openDetail(tool) {
+        activeTool = tool;
+        formMode = 'form';
+        rawJsonBuffer = '{}';
+        renderToolList();
+        renderDetail();
+      }
+
+      function renderDetail() {
+        const panel = $('#detail-panel');
+        if (!activeTool) {
+          panel.innerHTML = `<div class="detail-empty" id="detail-empty">` +
+            `<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.3">` +
+              `<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>` +
+            `</svg>` +
+            `<div class="detail-empty-text">Select a tool to inspect</div>` +
+          `</div>`;
+          return;
+        }
+        const t = activeTool;
+        const schema = t.input_schema;
+        const hasProps = schema && schema.properties && Object.keys(schema.properties).length > 0;
+
+        let formHtml;
+        if (!hasProps && formMode === 'form') {
+          formHtml = `<div class="no-params">This tool takes no parameters</div>`;
+        } else if (formMode === 'json') {
+          const val = hasProps ? rawJsonBuffer : '{}';
+          formHtml = `<textarea class="raw-json-editor" id="raw-json-editor">${esc(val)}</textarea>`;
+        } else {
+          formHtml = buildFormFields(schema);
+        }
+
+        panel.innerHTML =
+          `<div class="detail-header">` +
+            `<div class="detail-title">${esc(t.name)}</div>` +
+            `<span class="detail-server-badge">${esc(t.server)}</span>` +
+          `</div>` +
+          (t.description ? `<div class="detail-description">${esc(t.description)}</div>` : '') +
+          `<div class="form-section">` +
+            `<div class="form-section-header">` +
+              `<span class="form-section-label">Arguments</span>` +
+              (hasProps ? `<button class="toggle-btn" id="form-toggle">${formMode === 'form' ? 'JSON' : 'Form'}</button>` : '') +
+            `</div>` +
+            `<div class="form-fields" id="form-fields">${formHtml}</div>` +
+          `</div>` +
+          `<div class="exec-row">` +
+            `<button class="exec-btn" id="exec-btn">` +
+              `${icon('send')} Execute` +
+            `</button>` +
+          `</div>` +
+          `<div class="result-section" id="result-section">` +
+            `<div class="result-header">` +
+              `<span class="result-status" id="result-status"></span>` +
+              `<button class="result-copy-btn" id="result-copy">${icon('copy')} Copy</button>` +
+            `</div>` +
+            `<div class="json-tree" id="result-tree"></div>` +
+          `</div>`;
+
+        // Wire events
+        const toggle = $('#form-toggle');
+        if (toggle) {
+          toggle.addEventListener('click', () => {
+            if (formMode === 'form') {
+              rawJsonBuffer = JSON.stringify(collectArguments(), null, 2);
+              formMode = 'json';
+            } else {
+              try {
+                const parsed = JSON.parse($('#raw-json-editor').value || '{}');
+                rawJsonBuffer = JSON.stringify(parsed, null, 2);
+              } catch { /* keep current buffer */ }
+              formMode = 'form';
+            }
+            renderDetail();
+          });
+        }
+        $('#exec-btn').addEventListener('click', executeTool);
+        $('#result-copy').addEventListener('click', copyResult);
+      }
+
+      // ── Form Fields ──────────────────────────────────────
+      function buildFormFields(schema) {
+        if (!schema || !schema.properties) return '';
+        const required = new Set(schema.required || []);
+        return Object.entries(schema.properties).map(([name, prop]) => {
+          const req = required.has(name);
+          const reqMark = req ? '<span class="req">*</span>' : '';
+          const typeStr = prop.type ? `<span class="field-type">${esc(prop.type)}</span>` : '';
+          const hint = prop.description ? `<div class="field-hint">${esc(prop.description)}</div>` : '';
+
+          let input;
+          if (prop.enum) {
+            const opts = prop.enum.map(v => `<option value="${esc(String(v))}">${esc(String(v))}</option>`).join('');
+            input = `<select class="field-select" data-name="${esc(name)}">${opts}</select>`;
+          } else if (prop.type === 'boolean') {
+            input = `<div class="field-checkbox-row"><input type="checkbox" class="field-checkbox" data-name="${esc(name)}" /><span class="field-hint">false</span></div>`;
+          } else if (prop.type === 'number' || prop.type === 'integer') {
+            input = `<input type="number" class="field-input" data-name="${esc(name)}" placeholder="${prop.type}" />`;
+          } else if (prop.type === 'array' || prop.type === 'object') {
+            const ph = prop.type === 'array' ? '[]' : '{}';
+            input = `<textarea class="field-textarea" data-name="${esc(name)}" data-json="true" rows="3" placeholder="${ph}"></textarea>`;
+          } else {
+            // string or unknown
+            const multiline = (prop.description || '').length > 60;
+            if (multiline) {
+              input = `<textarea class="field-textarea" data-name="${esc(name)}" rows="2" placeholder="${esc(name)}"></textarea>`;
+            } else {
+              input = `<input type="text" class="field-input" data-name="${esc(name)}" placeholder="${esc(name)}" />`;
+            }
+          }
+
+          return `<div class="field-group">` +
+            `<label class="field-label">${esc(name)} ${reqMark} ${typeStr}</label>` +
+            hint +
+            input +
+          `</div>`;
+        }).join('');
+      }
+
+      // ── Collect arguments ────────────────────────────────
+      function collectArguments() {
+        // JSON mode
+        const rawEl = $('#raw-json-editor');
+        if (rawEl) {
+          try { return JSON.parse(rawEl.value || '{}'); }
+          catch { return {}; }
+        }
+
+        // No params
+        if (!activeTool.input_schema || !activeTool.input_schema.properties) return {};
+
+        const args = {};
+        $$('#form-fields [data-name]').forEach(el => {
+          const name = el.dataset.name;
+          if (el.type === 'checkbox') {
+            args[name] = el.checked;
+          } else if (el.type === 'number') {
+            if (el.value !== '') args[name] = Number(el.value);
+          } else if (el.dataset.json === 'true') {
+            if (el.value.trim()) {
+              try { args[name] = JSON.parse(el.value); }
+              catch { args[name] = el.value; }
+            }
+          } else if (el.tagName === 'SELECT') {
+            if (el.value !== '') args[name] = el.value;
+          } else {
+            if (el.value !== '') args[name] = el.value;
+          }
+        });
+        return args;
+      }
+
+      // ── Execute Tool ─────────────────────────────────────
+      let lastResultData = null;
+
+      async function executeTool() {
+        if (!activeTool) return;
+        const btn = $('#exec-btn');
+        btn.disabled = true;
+        btn.innerHTML = `<svg class="spinner" width="14" height="14"><use href="#icon-loader"/></svg> Executing\u2026`;
+        const section = $('#result-section');
+        section.classList.remove('show');
+
+        const reqArgs = collectArguments();
+        const body = { server: activeTool.server, tool: activeTool.name, arguments: reqArgs };
+        const startTime = Date.now();
+        let respOk = false;
+        let respStatus = 0;
+        let data = null;
+
+        try {
+          const r = await fetch('api/tools/call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          data = await r.json();
+          respOk = r.ok;
+          respStatus = r.status;
+          const statusEl = $('#result-status');
+          statusEl.textContent = `${r.status} ${r.statusText}`;
+          statusEl.className = `result-status ${r.ok ? 'ok' : 'err'}`;
+          lastResultData = data;
+          renderJsonTree($('#result-tree'), data);
+          section.classList.add('show');
+        } catch (e) {
+          const statusEl = $('#result-status');
+          statusEl.textContent = 'Network error';
+          statusEl.className = 'result-status err';
+          lastResultData = { error: String(e) };
+          renderJsonTree($('#result-tree'), lastResultData);
+          section.classList.add('show');
+          data = lastResultData;
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = `${icon('send')} Execute`;
+        }
+
+        // Add to history
+        const elapsed = Date.now() - startTime;
+        addHistoryEntry({
+          num: ++historyCounter,
+          server: activeTool.server,
+          tool: activeTool.name,
+          request: reqArgs,
+          response: data,
+          ok: respOk,
+          status: respStatus,
+          elapsed,
+        });
+      }
+
+      function copyResult() {
+        if (lastResultData !== null) {
+          navigator.clipboard.writeText(JSON.stringify(lastResultData, null, 2)).then(() => {
+            const btn = $('#result-copy');
+            const orig = btn.innerHTML;
+            btn.textContent = 'Copied!';
+            setTimeout(() => { btn.innerHTML = orig; }, 1500);
+          });
+        }
+      }
+
+      // ── JSON Tree Viewer ─────────────────────────────────
+      function renderJsonTree(container, data, maxDepth = 3) {
+        container.innerHTML = '';
+        const frag = document.createDocumentFragment();
+        buildTreeNode(frag, null, data, 0, maxDepth);
+        container.appendChild(frag);
+      }
+
+      function buildTreeNode(parent, key, value, depth, maxDepth) {
+        const row = document.createElement('div');
+        row.className = 'jt-row';
+        row.style.setProperty('--depth', depth);
+
+        if (depth > 0) {
+          const line = document.createElement('span');
+          line.className = 'jt-indent-line';
+          row.appendChild(line);
+        }
+
+        const isObj = value !== null && typeof value === 'object';
+        const isArray = Array.isArray(value);
+
+        if (isObj) {
+          const entries = isArray ? value : Object.entries(value);
+          const len = isArray ? value.length : Object.keys(value).length;
+          const openBracket = isArray ? '[' : '{';
+          const closeBracket = isArray ? ']' : '}';
+          const collapsed = depth >= maxDepth && len > 0;
+
+          // Toggle button
+          const toggle = document.createElement('button');
+          toggle.className = 'jt-toggle';
+          toggle.innerHTML = collapsed
+            ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>'
+            : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>';
+          row.appendChild(toggle);
+
+          // Key
+          if (key !== null) {
+            const keySpan = document.createElement('span');
+            keySpan.className = 'jt-key';
+            keySpan.textContent = `"${key}"`;
+            row.appendChild(keySpan);
+            const colon = document.createElement('span');
+            colon.className = 'jt-colon';
+            colon.textContent = ':';
+            row.appendChild(colon);
+          }
+
+          // Open bracket
+          const bracket = document.createElement('span');
+          bracket.className = 'jt-bracket';
+          bracket.textContent = openBracket;
+          row.appendChild(bracket);
+
+          // Container for children
+          const childContainer = document.createElement('div');
+
+          if (collapsed) {
+            // Show ellipsis
+            const ellipsis = document.createElement('span');
+            ellipsis.className = 'jt-ellipsis';
+            ellipsis.textContent = '\u2026';
+            row.appendChild(ellipsis);
+
+            const size = document.createElement('span');
+            size.className = 'jt-size';
+            size.textContent = `${len} ${isArray ? 'items' : 'keys'}`;
+            row.appendChild(size);
+
+            childContainer.style.display = 'none';
+          }
+
+          // Close bracket (inline if collapsed)
+          if (collapsed) {
+            const close = document.createElement('span');
+            close.className = 'jt-bracket';
+            close.textContent = closeBracket;
+            row.appendChild(close);
+          }
+
+          // Copy button
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'jt-copy-btn';
+          copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+          copyBtn.title = 'Copy value';
+          copyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            navigator.clipboard.writeText(JSON.stringify(value, null, 2));
+            copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+            setTimeout(() => {
+              copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+            }, 1500);
+          });
+          row.appendChild(copyBtn);
+
+          parent.appendChild(row);
+
+          // Build children
+          if (isArray) {
+            value.forEach((item, i) => {
+              buildTreeNode(childContainer, null, item, depth + 1, maxDepth);
+            });
+          } else {
+            Object.entries(value).forEach(([k, v]) => {
+              buildTreeNode(childContainer, k, v, depth + 1, maxDepth);
+            });
+          }
+
+          // Close bracket row (expanded)
+          if (!collapsed) {
+            const closeRow = document.createElement('div');
+            closeRow.className = 'jt-row';
+            closeRow.style.setProperty('--depth', depth);
+            const spacer = document.createElement('span');
+            spacer.style.width = '16px';
+            spacer.style.display = 'inline-block';
+            closeRow.appendChild(spacer);
+            const closeBr = document.createElement('span');
+            closeBr.className = 'jt-bracket';
+            closeBr.textContent = closeBracket;
+            closeRow.appendChild(closeBr);
+            childContainer.appendChild(closeRow);
+          }
+
+          parent.appendChild(childContainer);
+
+          // Toggle click
+          let isCollapsed = collapsed;
+          toggle.addEventListener('click', () => {
+            isCollapsed = !isCollapsed;
+            if (isCollapsed) {
+              childContainer.style.display = 'none';
+              toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>';
+              // Show inline close bracket + ellipsis
+              if (!row.querySelector('.jt-ellipsis')) {
+                const ell = document.createElement('span');
+                ell.className = 'jt-ellipsis';
+                ell.textContent = '\u2026';
+                bracket.after(ell);
+                const sz = document.createElement('span');
+                sz.className = 'jt-size';
+                sz.textContent = `${len} ${isArray ? 'items' : 'keys'}`;
+                ell.after(sz);
+                const cls = document.createElement('span');
+                cls.className = 'jt-bracket';
+                cls.textContent = closeBracket;
+                sz.after(cls);
+              } else {
+                row.querySelectorAll('.jt-ellipsis, .jt-size').forEach(e => e.style.display = '');
+                // Show inline close bracket
+                const brackets = row.querySelectorAll('.jt-bracket');
+                if (brackets.length > 1) brackets[brackets.length - 1].style.display = '';
+              }
+            } else {
+              childContainer.style.display = '';
+              toggle.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>';
+              // Hide inline extras
+              row.querySelectorAll('.jt-ellipsis, .jt-size').forEach(e => e.style.display = 'none');
+              const brackets = row.querySelectorAll('.jt-bracket');
+              if (brackets.length > 1) brackets[brackets.length - 1].style.display = 'none';
+            }
+          });
+        } else {
+          // Leaf value
+          const spacer = document.createElement('span');
+          spacer.style.width = '16px';
+          spacer.style.display = 'inline-block';
+          spacer.style.flexShrink = '0';
+          row.appendChild(spacer);
+
+          if (key !== null) {
+            const keySpan = document.createElement('span');
+            keySpan.className = 'jt-key';
+            keySpan.textContent = `"${key}"`;
+            row.appendChild(keySpan);
+            const colon = document.createElement('span');
+            colon.className = 'jt-colon';
+            colon.textContent = ':';
+            row.appendChild(colon);
+          }
+
+          const valSpan = document.createElement('span');
+          if (value === null) {
+            valSpan.className = 'jt-null';
+            valSpan.textContent = 'null';
+          } else if (typeof value === 'boolean') {
+            valSpan.className = 'jt-boolean';
+            valSpan.textContent = String(value);
+          } else if (typeof value === 'number') {
+            valSpan.className = 'jt-number';
+            valSpan.textContent = String(value);
+          } else {
+            valSpan.className = 'jt-string';
+            const str = String(value);
+            valSpan.textContent = `"${str.length > 200 ? str.slice(0, 200) + '\u2026' : str}"`;
+            valSpan.title = str;
+          }
+          row.appendChild(valSpan);
+
+          // Copy button for leaf
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'jt-copy-btn';
+          copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+          copyBtn.title = 'Copy value';
+          copyBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const text = value === null ? 'null' : typeof value === 'string' ? value : String(value);
+            navigator.clipboard.writeText(text);
+            copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>';
+            setTimeout(() => {
+              copyBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
+            }, 1500);
+          });
+          row.appendChild(copyBtn);
+
+          parent.appendChild(row);
+        }
+      }
+
+      // ── History ──────────────────────────────────────────
+      const historyPane = $('#history-pane');
+      const historyHeader = $('#history-header');
+      const historyBody = $('#history-body');
+      const historyCount = $('#history-count');
+      const historyClear = $('#history-clear');
+
+      historyHeader.addEventListener('click', (e) => {
+        if (e.target.closest('.history-clear-btn')) return;
+        historyPane.classList.toggle('collapsed');
+        // Update the chevron
+        const svg = historyHeader.querySelector('.history-header-left svg');
+        if (historyPane.classList.contains('collapsed')) {
+          svg.innerHTML = '<polyline points="9 18 15 12 9 6"/>';
+        } else {
+          svg.innerHTML = '<polyline points="6 9 12 15 18 9"/>';
+        }
+      });
+
+      historyClear.addEventListener('click', (e) => {
+        e.stopPropagation();
+        history = [];
+        historyCounter = 0;
+        renderHistory();
+      });
+
+      function addHistoryEntry(entry) {
+        history.unshift(entry);
+        renderHistory();
+        // Expand the pane if collapsed
+        historyPane.classList.remove('collapsed');
+        const svg = historyHeader.querySelector('.history-header-left svg');
+        svg.innerHTML = '<polyline points="6 9 12 15 18 9"/>';
+      }
+
+      function renderHistory() {
+        historyCount.textContent = history.length;
+        if (!history.length) {
+          historyBody.innerHTML = '<div class="history-empty">No tool calls yet</div>';
+          return;
+        }
+        historyBody.innerHTML = history.map((h, i) =>
+          `<div class="history-entry" data-idx="${i}">` +
+            `<div class="history-entry-header">` +
+              `<span class="history-entry-num">#${h.num}</span>` +
+              `<span class="history-entry-tool">${esc(h.server)}:${esc(h.tool)}</span>` +
+              `<span class="history-entry-status ${h.ok ? 'ok' : 'err'}">${h.status || 'err'}</span>` +
+              `<span class="history-entry-time">${h.elapsed}ms</span>` +
+              `<span class="history-entry-chevron">${icon('chevron-right')}</span>` +
+            `</div>` +
+            `<div class="history-entry-detail">` +
+              `<div class="history-detail-label">Request</div>` +
+              `<div class="history-detail-json">${esc(JSON.stringify(h.request, null, 2))}</div>` +
+              `<div class="history-detail-label">Response</div>` +
+              `<div class="history-detail-json">${esc(JSON.stringify(h.response, null, 2))}</div>` +
+            `</div>` +
+          `</div>`
+        ).join('');
+      }
+
+      historyBody.addEventListener('click', (e) => {
+        const header = e.target.closest('.history-entry-header');
+        if (!header) return;
+        const entry = header.closest('.history-entry');
+        entry.classList.toggle('expanded');
+      });
+
+      // ── Server Status Modal ──────────────────────────────
+      const modalOverlay = $('#modal-overlay');
+      const modalBody = $('#modal-body');
+
+      $('#status-line').addEventListener('click', () => {
+        modalBody.innerHTML = cachedServers.length
+          ? cachedServers.map(s => {
+              const authBadge = s.needs_auth
+                ? `<button class="server-group-login" data-server="${esc(s.name)}" title="Login to ${esc(s.name)}" style="margin-left:auto">${icon('log-in')}</button>`
+                : '';
+              return `<div class="modal-server">` +
+                `<span class="status-dot ${s.healthy ? 'ok' : 'fail'}"></span>` +
+                `<div style="flex:1;min-width:0">` +
+                  `<div class="modal-server-name">${esc(s.name)}</div>` +
+                  `<div class="modal-server-info">${s.tools_count} tool${s.tools_count !== 1 ? 's' : ''}${s.healthy ? '' : ' \u00b7 unhealthy'}${s.needs_auth ? ' \u00b7 needs login' : ''}</div>` +
+                  (s.error ? `<div class="modal-server-error">${esc(s.error)}</div>` : '') +
+                `</div>` +
+                authBadge +
+              `</div>`;
+            }).join('')
+          : '<div style="padding:16px;text-align:center;color:hsl(var(--muted-foreground))">No servers</div>';
+        modalOverlay.classList.add('open');
+      });
+
+      // Handle login clicks inside modal
+      modalBody.addEventListener('click', (e) => {
+        const loginBtn = e.target.closest('.server-group-login');
+        if (loginBtn) {
+          const serverName = loginBtn.dataset.server;
+          closeModal();
+          startOAuth(serverName);
+        }
+      });
+
+      function closeModal() { modalOverlay.classList.remove('open'); }
+      $('#modal-close').addEventListener('click', closeModal);
+      modalOverlay.addEventListener('click', (e) => {
+        if (e.target === modalOverlay) closeModal();
+      });
+
+      // ── Init ─────────────────────────────────────────────
+      loadServers();
+      setInterval(loadServers, 30000);
+    })();
+    </script>
+  </body>
+</html>

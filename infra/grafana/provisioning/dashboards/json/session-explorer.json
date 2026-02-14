@@ -1,0 +1,152 @@
+{
+  "uid": "smith-session-explorer",
+  "title": "Session Explorer",
+  "tags": ["smith", "traces", "sessions"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "agent_id",
+        "type": "query",
+        "datasource": { "uid": "clickhouse", "type": "grafana-clickhouse-datasource" },
+        "query": "SELECT DISTINCT SpanAttributes['agent.id'] FROM otel.otel_traces WHERE ServiceName = 'pi-bridge' AND SpanName = 'chat.session' AND Timestamp >= now() - INTERVAL 7 DAY ORDER BY 1",
+        "current": { "text": "All", "value": "$__all" },
+        "includeAll": true,
+        "allValue": "%",
+        "refresh": 2,
+        "sort": 1
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Chat Sessions",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "datasource": { "uid": "clickhouse", "type": "grafana-clickhouse-datasource" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  TraceId AS trace_id,\n  SpanAttributes['session.id'] AS session_id,\n  SpanAttributes['agent.id'] AS agent_id,\n  SpanAttributes['chat.source'] AS source,\n  SpanAttributes['chat.channel_id'] AS channel_id,\n  Timestamp AS started_at,\n  Duration / 1e9 AS duration_sec\nFROM otel.otel_traces\nWHERE ServiceName = 'pi-bridge'\n  AND SpanName = 'chat.session'\n  AND Timestamp >= $__fromTime\n  AND Timestamp <= $__toTime\n  AND SpanAttributes['agent.id'] LIKE '${agent_id}'\nORDER BY Timestamp DESC\nLIMIT 100",
+          "format": 1,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "trace_id" },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View Trace",
+                    "url": "/explore?left={\"datasource\":\"clickhouse\",\"queries\":[{\"rawSql\":\"SELECT * FROM otel.otel_traces WHERE TraceId = '${__value.text}' ORDER BY Timestamp\",\"format\":1}]}",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "duration_sec" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "decimals", "value": 2 }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "title": "Session Duration Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "datasource": { "uid": "clickhouse", "type": "grafana-clickhouse-datasource" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  Duration / 1e9 AS duration_sec\nFROM otel.otel_traces\nWHERE ServiceName = 'pi-bridge'\n  AND SpanName = 'chat.session'\n  AND Timestamp >= $__fromTime\n  AND Timestamp <= $__toTime\n  AND SpanAttributes['agent.id'] LIKE '${agent_id}'",
+          "format": 1,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "options": {
+        "bucketCount": 20,
+        "fillOpacity": 80
+      }
+    },
+    {
+      "id": 3,
+      "title": "Sessions Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "datasource": { "uid": "clickhouse", "type": "grafana-clickhouse-datasource" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  toStartOfInterval(Timestamp, INTERVAL 1 HOUR) AS time,\n  count() AS sessions\nFROM otel.otel_traces\nWHERE ServiceName = 'pi-bridge'\n  AND SpanName = 'chat.session'\n  AND Timestamp >= $__fromTime\n  AND Timestamp <= $__toTime\n  AND SpanAttributes['agent.id'] LIKE '${agent_id}'\nGROUP BY time\nORDER BY time",
+          "format": 0,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 50
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Trace Waterfall (select a session above)",
+      "type": "table",
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 18 },
+      "datasource": { "uid": "clickhouse", "type": "grafana-clickhouse-datasource" },
+      "targets": [
+        {
+          "rawSql": "SELECT\n  SpanName AS span,\n  SpanAttributes['session.id'] AS session_id,\n  SpanAttributes['turn.index'] AS turn,\n  SpanAttributes['tool.name'] AS tool,\n  SpanAttributes['llm.model'] AS model,\n  SpanAttributes['llm.tokens.input'] AS tokens_in,\n  SpanAttributes['llm.tokens.output'] AS tokens_out,\n  SpanAttributes['llm.cost_usd'] AS cost,\n  SpanAttributes['tool.duration_ms'] AS tool_ms,\n  Duration / 1e6 AS duration_ms,\n  Timestamp\nFROM otel.otel_traces\nWHERE ServiceName = 'pi-bridge'\n  AND Timestamp >= $__fromTime\n  AND Timestamp <= $__toTime\n  AND SpanAttributes['agent.id'] LIKE '${agent_id}'\nORDER BY Timestamp DESC\nLIMIT 200",
+          "format": 1,
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "duration_ms" },
+            "properties": [
+              { "id": "unit", "value": "ms" },
+              { "id": "decimals", "value": 1 }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

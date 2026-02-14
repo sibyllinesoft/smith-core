@@ -1,0 +1,14 @@
+{
+  "name": "@smith/session-recorder",
+  "version": "0.1.0",
+  "description": "NATS subscriber that records chat sessions to PostgreSQL from the telemetry stream",
+  "type": "module",
+  "main": "recorder.mjs",
+  "scripts": {
+    "start": "node recorder.mjs"
+  },
+  "dependencies": {
+    "nats": "^2.28.0",
+    "pg": "^8.13.0"
+  }
+}

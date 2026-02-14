@@ -1,0 +1,273 @@
+# Envoy Egress Proxy for Agent External API Access
+#
+# This proxy sits between agentd and external APIs, providing:
+# - Policy-based access control (via OPA)
+# - Credential injection (agents don't see API keys)
+# - Rate limiting per destination
+# - Request/response logging
+#
+# Agents make requests to: http://egress-proxy:8443/{service}/...
+# Example: http://egress-proxy:8443/openai/v1/chat/completions
+#
+# The proxy:
+# 1. Extracts service name from path
+# 2. Checks OPA policy (is this sandbox allowed to call this service?)
+# 3. Injects appropriate credentials
+# 4. Forwards to actual API
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9902
+
+static_resources:
+  listeners:
+    - name: egress_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 8443
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: egress_proxy
+                codec_type: AUTO
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          sandbox_id: "%REQ(X-Sandbox-ID)%"
+                          destination: "%REQ(:AUTHORITY)%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          status: "%RESPONSE_CODE%"
+                          duration_ms: "%DURATION%"
+                          bytes_sent: "%BYTES_SENT%"
+                          bytes_received: "%BYTES_RECEIVED%"
+                          upstream_host: "%UPSTREAM_HOST%"
+                          authz_status: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:authz_status)%"
+
+                route_config:
+                  name: egress_routes
+                  virtual_hosts:
+                    # OpenAI API
+                    - name: openai
+                      domains: ["openai", "openai.local"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: openai_api
+                            timeout: 120s
+                            host_rewrite_literal: api.openai.com
+                          request_headers_to_remove:
+                            - x-sandbox-id
+                            - x-original-authorization
+
+                    # Anthropic API
+                    - name: anthropic
+                      domains: ["anthropic", "anthropic.local"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: anthropic_api
+                            timeout: 120s
+                            host_rewrite_literal: api.anthropic.com
+                          request_headers_to_remove:
+                            - x-sandbox-id
+                            - x-original-authorization
+
+                    # GitHub API
+                    - name: github
+                      domains: ["github", "github.local"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: github_api
+                            timeout: 60s
+                            host_rewrite_literal: api.github.com
+                          request_headers_to_remove:
+                            - x-sandbox-id
+                            - x-original-authorization
+
+                    # Generic HTTPS proxy (for allowed domains)
+                    - name: https_proxy
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: dynamic_https
+                            timeout: 60s
+                          request_headers_to_remove:
+                            - x-sandbox-id
+
+                http_filters:
+                  # Extract sandbox context from request
+                  - name: envoy.filters.http.lua
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                      default_source_code:
+                        inline_string: |
+                          function envoy_on_request(handle)
+                            -- Extract service from Host header for routing
+                            local host = handle:headers():get(":authority")
+                            if host then
+                              -- Store for logging
+                              handle:streamInfo():dynamicMetadata():set("egress", "target_service", host)
+                            end
+                          end
+
+                  # Policy check via OPA
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_egress_authz
+                        timeout: 1s
+                      failure_mode_allow: false
+                      with_request_body:
+                        max_request_bytes: 65536
+                        allow_partial_message: true
+                        pack_as_bytes: false
+                      status_on_error:
+                        code: 503
+                      # OPA can return headers to add (like injected credentials)
+                      allowed_headers:
+                        patterns:
+                          - exact: "authorization"
+                          - exact: "x-api-key"
+                          - prefix: "x-"
+
+                  # Rate limiting per service
+                  - name: envoy.filters.http.local_ratelimit
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+                      stat_prefix: egress_rate_limit
+                      token_bucket:
+                        max_tokens: 100
+                        tokens_per_fill: 10
+                        fill_interval: 1s
+                      filter_enabled:
+                        runtime_key: egress_rate_limit_enabled
+                        default_value:
+                          numerator: 100
+                          denominator: HUNDRED
+                      filter_enforced:
+                        runtime_key: egress_rate_limit_enforced
+                        default_value:
+                          numerator: 100
+                          denominator: HUNDRED
+
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # OpenAI API
+    - name: openai_api
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: openai_api
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: api.openai.com
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: api.openai.com
+
+    # Anthropic API
+    - name: anthropic_api
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: anthropic_api
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: api.anthropic.com
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: api.anthropic.com
+
+    # GitHub API
+    - name: github_api
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: github_api
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: api.github.com
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          sni: api.github.com
+
+    # Dynamic HTTPS cluster for other allowed domains
+    - name: dynamic_https
+      type: LOGICAL_DNS
+      dns_lookup_family: V4_ONLY
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: dynamic_https
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: placeholder.invalid
+                      port_value: 443
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+
+    # OPA for egress policy
+    - name: opa_egress_authz
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: opa_egress_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: opa
+                      port_value: 9191

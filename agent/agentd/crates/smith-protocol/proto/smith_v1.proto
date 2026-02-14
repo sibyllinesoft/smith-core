@@ -1,0 +1,309 @@
+syntax = "proto3";
+
+package smith.v1;
+
+// Smith Protocol version 1 definitions for high-performance IPC
+// This replaces JSONL with binary protobuf for ~20% performance improvement
+// Smith: A high-performance AI-powered development assistant and tool execution platform
+
+// Service capability enumeration
+enum Capability {
+  CAPABILITY_UNSPECIFIED = 0;
+  CAPABILITY_SHELL_EXEC = 1;
+  CAPABILITY_HOOKS_JS = 2;
+  CAPABILITY_HOOKS_RUST = 3; 
+  CAPABILITY_REPLAY = 4;
+  CAPABILITY_NATS = 5;
+  CAPABILITY_TRACING = 6;
+}
+
+// Service operational states
+enum ServiceState {
+  SERVICE_STATE_UNSPECIFIED = 0;
+  SERVICE_STATE_STARTING = 1;
+  SERVICE_STATE_READY = 2;
+  SERVICE_STATE_PROCESSING = 3;
+  SERVICE_STATE_ERROR = 4;
+  SERVICE_STATE_SHUTTING = 5;
+}
+
+// Log severity levels
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_TRACE = 1;
+  LOG_LEVEL_DEBUG = 2;
+  LOG_LEVEL_INFO = 3;
+  LOG_LEVEL_WARN = 4;
+  LOG_LEVEL_ERROR = 5;
+}
+
+// Hook action types
+enum HookActionType {
+  HOOK_ACTION_TYPE_UNSPECIFIED = 0;
+  HOOK_ACTION_TYPE_ALLOW = 1;
+  HOOK_ACTION_TYPE_BLOCK = 2;
+  HOOK_ACTION_TYPE_TRANSFORM = 3;
+}
+
+// Standard error codes
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNSUPPORTED_VERSION = 1;
+  ERROR_CODE_INVALID_CAPABILITY = 2;
+  ERROR_CODE_INVALID_TOOL = 3;
+  ERROR_CODE_EXECUTION_TIMEOUT = 4;
+  ERROR_CODE_PERMISSION_DENIED = 5;
+  ERROR_CODE_RESOURCE_EXHAUSTED = 6;
+  ERROR_CODE_INTERNAL_ERROR = 7;
+}
+
+// Message envelope for all communications
+message Envelope {
+  uint64 timestamp = 1;      // Unix timestamp in milliseconds
+  uint64 sequence = 2;       // Monotonic sequence number
+  oneof payload {
+    Command command = 10;
+    Event event = 11;
+  }
+}
+
+// Commands sent from client to service
+message Command {
+  oneof command_type {
+    HandshakeCommand handshake = 1;
+    PlanCommand plan = 2;
+    ToolCallCommand tool_call = 3;
+    HookLoadCommand hook_load = 4;
+    ShellExecCommand shell_exec = 5;
+    ShutdownCommand shutdown = 6;
+  }
+}
+
+// Handshake initiation
+message HandshakeCommand {
+  uint32 version = 1;                    // Protocol version
+  repeated Capability capabilities = 2;  // Requested capabilities
+  map<string, string> client_info = 3;   // Optional client metadata
+}
+
+// Planning request
+message PlanCommand {
+  string request_id = 1;            // UUID as string
+  string goal = 2;                  // Human-readable goal
+  map<string, string> context = 3;  // Execution context
+}
+
+// Tool execution request  
+message ToolCallCommand {
+  string request_id = 1;  // UUID as string
+  string tool = 2;        // Tool identifier
+  bytes args = 3;         // JSON-encoded arguments (binary for efficiency)
+  optional uint64 timeout_ms = 4;  // Optional timeout in milliseconds
+}
+
+// Hook loading request
+message HookLoadCommand {
+  string request_id = 1;  // UUID as string
+  string hook_type = 2;   // "js" or "rust"
+  string script = 3;      // Hook source code
+}
+
+// Shell command execution
+message ShellExecCommand {
+  string request_id = 1;              // UUID as string
+  string command = 2;                 // Shell command
+  optional string shell = 3;          // Shell path (optional)
+  optional string cwd = 4;            // Working directory (optional)
+  map<string, string> env = 5;        // Environment variables
+  optional uint64 timeout_ms = 6;     // Optional timeout
+}
+
+// Shutdown request
+message ShutdownCommand {
+  // Empty - no additional fields needed
+}
+
+// Events sent from service to client
+message Event {
+  oneof event_type {
+    ReadyEvent ready = 1;
+    StateChangeEvent state_change = 2;
+    LogEvent log = 3;
+    TokenUsageEvent token_usage = 4;
+    ShellOutputEvent shell_output = 5;
+    ToolResultEvent tool_result = 6;
+    HookResultEvent hook_result = 7;
+    GraphDeltaEvent graph_delta = 8;
+    ErrorEvent error = 9;
+  }
+}
+
+// Service ready notification
+message ReadyEvent {
+  uint32 version = 1;                    // Supported protocol version
+  repeated Capability capabilities = 2;  // Available capabilities
+  string service_id = 3;                 // Service UUID
+  map<string, string> service_info = 4;  // Optional service metadata
+}
+
+// State change notification
+message StateChangeEvent {
+  optional string request_id = 1;  // Associated request (optional)
+  ServiceState state = 2;          // New state
+  uint64 timestamp = 3;            // Timestamp of change
+}
+
+// Log message
+message LogEvent {
+  LogLevel level = 1;               // Log severity
+  string message = 2;               // Log message
+  uint64 timestamp = 3;             // Timestamp
+  optional string request_id = 4;   // Associated request (optional)
+  map<string, string> fields = 5;   // Structured fields
+}
+
+// Token usage tracking
+message TokenUsageEvent {
+  string request_id = 1;              // Associated request
+  uint64 tokens_used = 2;             // Tokens consumed
+  optional uint64 tokens_remaining = 3;  // Remaining tokens (optional)
+  string model = 4;                   // Model identifier
+}
+
+// Shell command output (streaming)
+message ShellOutputEvent {
+  string request_id = 1;        // Associated request
+  optional string stdout = 2;   // Standard output chunk (optional)
+  optional string stderr = 3;   // Standard error chunk (optional) 
+  optional int32 exit_code = 4; // Exit code (only in final event)
+  bool finished = 5;            // True if execution complete
+}
+
+// Tool execution result
+message ToolResultEvent {
+  string request_id = 1;  // Associated request
+  bool success = 2;       // Execution success
+  bytes result = 3;       // JSON-encoded result (binary for efficiency)
+  optional string error = 4;  // Error message if failed
+  uint64 duration_ms = 5;      // Execution duration
+}
+
+// Hook execution result
+message HookResultEvent {
+  string request_id = 1;  // Associated request
+  HookAction action = 2;  // Hook action taken
+}
+
+// Hook action definition
+message HookAction {
+  HookActionType type = 1;  // Action type
+  oneof action_data {
+    bytes allowed_data = 10;      // Original data (for ALLOW)
+    string block_reason = 11;     // Block reason (for BLOCK)
+    bytes transformed_data = 12;  // Modified data (for TRANSFORM)
+  }
+}
+
+// Graph/DAG state delta
+message GraphDeltaEvent {
+  optional string request_id = 1;      // Associated request (optional)
+  repeated GraphNode nodes_added = 2;  // Added nodes
+  repeated GraphEdge edges_added = 3;  // Added edges
+  repeated string nodes_removed = 4;   // Removed node IDs
+  repeated string edges_removed = 5;   // Removed edge IDs
+}
+
+// Graph node definition
+message GraphNode {
+  string id = 1;                      // Node UUID
+  string label = 2;                   // Human-readable label
+  string node_type = 3;               // Node type identifier
+  map<string, string> metadata = 4;   // Node metadata
+}
+
+// Graph edge definition
+message GraphEdge {
+  string id = 1;            // Edge UUID
+  string from = 2;          // Source node UUID
+  string to = 3;            // Target node UUID
+  optional string label = 4;   // Edge label (optional)
+  string edge_type = 5;     // Edge type identifier
+}
+
+// Error notification
+message ErrorEvent {
+  optional string request_id = 1;  // Associated request (optional)
+  ErrorCode error_code = 2;        // Structured error code
+  string message = 3;              // Human-readable message
+  uint64 timestamp = 4;            // Error timestamp
+  map<string, string> details = 5; // Additional error details
+}
+
+// Version negotiation and capability discovery
+service SmithService {
+  // Negotiate protocol version and capabilities
+  rpc Negotiate(NegotiateRequest) returns (NegotiateResponse);
+  
+  // Bidirectional streaming for real-time communication
+  rpc Stream(stream Envelope) returns (stream Envelope);
+}
+
+// Protocol negotiation request
+message NegotiateRequest {
+  repeated uint32 supported_versions = 1;    // Client-supported versions
+  repeated Capability capabilities = 2;       // Requested capabilities
+  map<string, string> client_metadata = 3;   // Client information
+}
+
+// Protocol negotiation response  
+message NegotiateResponse {
+  uint32 selected_version = 1;               // Chosen protocol version
+  repeated Capability capabilities = 2;       // Available capabilities
+  map<string, string> service_metadata = 3;  // Service information
+  bool fallback_to_jsonl = 4;                // Whether to fallback to v0 JSONL
+}
+
+// Performance optimization messages for high-frequency operations
+message BatchCommand {
+  repeated Command commands = 1;     // Multiple commands in single message
+  bool require_ordering = 2;         // Whether commands must execute in order
+}
+
+message BatchEvent {
+  repeated Event events = 1;         // Multiple events in single message
+  bool partial_batch = 2;            // Whether more events follow
+}
+
+// Health check and monitoring
+message HealthCheckRequest {
+  string service_name = 1;           // Optional service identifier
+}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    SERVING_STATUS_UNSPECIFIED = 0;
+    SERVING_STATUS_SERVING = 1;
+    SERVING_STATUS_NOT_SERVING = 2;
+    SERVING_STATUS_SERVICE_UNKNOWN = 3;
+  }
+  
+  ServingStatus status = 1;
+  map<string, string> metrics = 2;   // Performance metrics
+}
+
+// Metrics and observability
+message MetricsEvent {
+  string metric_name = 1;            // Metric identifier
+  double value = 2;                  // Metric value
+  uint64 timestamp = 3;              // Measurement timestamp
+  map<string, string> labels = 4;    // Metric labels/tags
+}
+
+// Resource usage tracking
+message ResourceUsageEvent {
+  uint64 memory_bytes = 1;           // Memory usage in bytes
+  double cpu_percent = 2;            // CPU utilization percentage
+  uint64 file_descriptors = 3;       // Open file descriptor count
+  uint64 network_connections = 4;    // Active network connections
+  uint64 timestamp = 5;              // Measurement timestamp
+}

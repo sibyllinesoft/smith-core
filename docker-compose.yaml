@@ -1,0 +1,347 @@
+# Smith Core — docker compose up
+#
+# Core infrastructure for the open-source Smith agent platform.
+# Provides: NATS, PostgreSQL, Redis, ClickHouse, OTEL, Grafana, OPA, Envoy,
+# MCP servers, session-recorder, cron scheduler, and the MCP index.
+
+services:
+  # ── Message Broker ──────────────────────────────────────────────────────
+  nats:
+    image: nats:2.10-alpine
+    container_name: smith-nats
+    hostname: nats
+    command: ['--config', '/etc/nats/nats.conf']
+    ports:
+      - "4222:4222"
+    expose:
+      - "8222"
+      - "6222"
+    volumes:
+      - ./infra/nats.conf:/etc/nats/nats.conf:ro
+      - ${SMITH_NATS_DATA_DIR:-./data/nats}:/data
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Database ────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: smith-postgres
+    hostname: postgres
+    ports:
+      - "5432:5432"
+    shm_size: ${SMITH_PG_SHM_SIZE:-256m}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${SMITH_PG_SHARED_BUFFERS:-256MB}
+      - -c
+      - work_mem=${SMITH_PG_WORK_MEM:-16MB}
+      - -c
+      - effective_cache_size=${SMITH_PG_EFFECTIVE_CACHE_SIZE:-768MB}
+    environment:
+      - POSTGRES_DB=smith
+      - POSTGRES_USER=smith
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-smith-dev}
+    volumes:
+      - ${SMITH_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
+      - ./infra/postgres/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U smith -d smith"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Cache ───────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7.2-alpine
+    container_name: smith-redis
+    hostname: redis
+    expose:
+      - "6379"
+    volumes:
+      - ${SMITH_REDIS_DATA_DIR:-./data/redis}:/data
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # ── Analytics Storage ───────────────────────────────────────────────────
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.10
+    container_name: smith-clickhouse
+    hostname: clickhouse
+    expose:
+      - "8123"
+      - "9000"
+    environment:
+      - CLICKHOUSE_DB=otel
+      - CLICKHOUSE_USER=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-observability-dev}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - ${SMITH_CLICKHOUSE_DATA_DIR:-./data/clickhouse}:/var/lib/clickhouse
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ── Telemetry Pipeline ─────────────────────────────────────────────────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.90.1
+    container_name: smith-otel-collector
+    hostname: otel-collector
+    command: ['--config=/etc/otelcol-contrib/otel-collector.yaml']
+    volumes:
+      - ./infra/otel/otel-collector.yaml:/etc/otelcol-contrib/otel-collector.yaml:ro
+    expose:
+      - "4317"
+      - "4318"
+      - "8888"
+      - "8889"
+    environment:
+      - CLICKHOUSE_ENDPOINT=http://clickhouse:8123
+      - CLICKHOUSE_DATABASE=otel
+      - CLICKHOUSE_USERNAME=default
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-observability-dev}
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+
+  # ── Dashboards ──────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.4.3
+    container_name: smith-grafana
+    hostname: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
+    volumes:
+      - ${SMITH_GRAFANA_DATA_DIR:-./data/grafana}:/var/lib/grafana
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+
+  # ── Policy Engine ───────────────────────────────────────────────────────
+  opa-management:
+    image: openpolicyagent/opa:latest-envoy
+    container_name: smith-opa
+    hostname: opa-management
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--config-file=/etc/opa/config.yaml"
+      - "--disable-telemetry"
+    expose:
+      - "8181"
+    volumes:
+      - ./infra/opa/opa-config.yaml:/etc/opa/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "opa", "eval", "--fail-defined", "status := http.send({\"method\":\"GET\",\"url\":\"http://localhost:8181/health?plugins\"}).status_code; status != 200"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── mTLS Gateway ────────────────────────────────────────────────────────
+  envoy:
+    image: envoyproxy/envoy:v1.31-latest
+    container_name: smith-envoy
+    hostname: smith-gateway
+    ports:
+      - "6173:10443"
+      - "9901:9901"
+    volumes:
+      - ./infra/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+    depends_on:
+      otel-collector:
+        condition: service_started
+      nats:
+        condition: service_started
+      redis:
+        condition: service_started
+    networks:
+      - smith
+    restart: unless-stopped
+
+  # ── Session Recorder ────────────────────────────────────────────────────
+  session-recorder:
+    build:
+      context: ./sidecar/session-recorder
+    container_name: smith-session-recorder
+    hostname: session-recorder
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SESSION_RECORDER_PG=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+
+  # ── Cron Scheduler ─────────────────────────────────────────────────────
+  smith-cron:
+    build:
+      context: ./service/smith-cron
+    container_name: smith-cron
+    hostname: smith-cron
+    environment:
+      - NATS_URL=nats://nats:4222
+      - SMITH_CRON_PG=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+    depends_on:
+      nats:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+
+  # ── MCP Servers ─────────────────────────────────────────────────────────
+  mcp-postgres:
+    build:
+      context: ./infra/mcp-servers/postgres
+    container_name: smith-mcp-postgres
+    hostname: mcp-postgres
+    expose:
+      - "9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-users:
+    build:
+      context: ./infra/mcp-servers/users
+    container_name: smith-mcp-users
+    hostname: mcp-users
+    expose:
+      - "9100"
+    environment:
+      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-cron:
+    build:
+      context: ./infra/mcp-servers/cron
+    container_name: smith-mcp-cron
+    hostname: mcp-cron
+    expose:
+      - "9100"
+    environment:
+      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ── MCP Index (Tool Catalog) ────────────────────────────────────────────
+  mcp-index:
+    build:
+      context: .
+      dockerfile: service/mcp-index/Dockerfile
+    container_name: smith-mcp-index
+    hostname: mcp-index
+    ports:
+      - "9200:9200"
+    environment:
+      - MCP_INDEX_UPSTREAMS=postgres=http://mcp-postgres:9100,users=http://mcp-users:9100,cron=http://mcp-cron:9100
+      - MCP_INDEX_POLL_INTERVAL=30
+      - MCP_INDEX_BASE_URL=http://localhost:9200
+    depends_on:
+      mcp-postgres:
+        condition: service_started
+      mcp-users:
+        condition: service_started
+      mcp-cron:
+        condition: service_started
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9200/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  opa_data:
+    driver: local
+  mcp_credentials:
+    driver: local
+
+networks:
+  smith:
+    driver: bridge

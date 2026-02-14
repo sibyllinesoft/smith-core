@@ -1,0 +1,18 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: agentd
+    static_configs:
+      - targets: ['agentd:8090']
+
+  - job_name: envoy-gateway
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ['envoy-gateway:9901']
+
+  - job_name: envoy-egress
+    metrics_path: /stats/prometheus
+    static_configs:
+      - targets: ['envoy-egress:9902']

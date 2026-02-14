@@ -1,0 +1,11 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: prometheus
+    url: http://otel-collector:8889
+    jsonData:
+      httpMethod: GET
+      timeInterval: 15s

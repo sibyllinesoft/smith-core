@@ -1,0 +1,577 @@
+# Envoy mTLS gateway for Smith Observability Stack
+#
+# Listeners:
+#   10443  – frontend gateway (mTLS required)
+#    4317  – OTLP gRPC ingestion (plaintext, agents only)
+#    4318  – OTLP HTTP ingestion (plaintext, agents only)
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    # ── Frontend gateway (mTLS) ────────────────────────────────────
+    - name: frontend_gateway
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10443
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: frontend
+                codec_type: AUTO
+                upgrade_configs:
+                  - upgrade_type: websocket
+                http_filters:
+                  # Filter 1: stateful auth (rate limit, pairing, identity injection)
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: ext_authz
+                        timeout: 2s
+                      failure_mode_allow: false
+                      transport_api_version: V3
+                  # Filter 2: OPA policy evaluation (uses x-oc-* headers from filter 1)
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_authz
+                        timeout: 2s
+                      failure_mode_allow: false
+                      transport_api_version: V3
+                      with_request_body:
+                        max_request_bytes: 0
+                        allow_partial_message: true
+                  - name: envoy.filters.http.grpc_json_transcoder
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.grpc_json_transcoder.v3.GrpcJsonTranscoder
+                      proto_descriptor: /etc/envoy/agentd_descriptor.pb
+                      services:
+                        - agentd.v1.Agentd
+                      auto_mapping: true
+                      print_options:
+                        preserve_proto_field_names: true
+                        always_print_primitive_fields: true
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: frontend_routes
+                  response_headers_to_add:
+                    - header:
+                        key: X-Content-Type-Options
+                        value: nosniff
+                    - header:
+                        key: X-Frame-Options
+                        value: SAMEORIGIN
+                    - header:
+                        key: X-XSS-Protection
+                        value: "1; mode=block"
+                    - header:
+                        key: Cache-Control
+                        value: "no-store"
+                  virtual_hosts:
+                    - name: gateway
+                      domains: ["*"]
+                      routes:
+                        # ── WebSocket ──────────────────────────────
+                        - match:
+                            path: "/ws"
+                          route:
+                            cluster: managerd
+                            timeout: 0s
+                            upgrade_configs:
+                              - upgrade_type: websocket
+
+                        # ── Managerd API ───────────────────────────
+                        - match:
+                            prefix: "/api/"
+                          route:
+                            cluster: managerd
+                        - match:
+                            path: "/api"
+                          route:
+                            cluster: managerd
+                        - match:
+                            path: "/health"
+                          route:
+                            cluster: managerd
+                        - match:
+                            path: "/metrics"
+                          route:
+                            cluster: managerd
+
+                        # ── ClickHouse (rewrite to managerd) ──────
+                        - match:
+                            path: "/clickhouse"
+                          route:
+                            cluster: managerd
+                            prefix_rewrite: "/api/clickhouse"
+                        - match:
+                            prefix: "/clickhouse/"
+                          route:
+                            cluster: managerd
+                            prefix_rewrite: "/api/clickhouse/"
+
+                        # ── Grafana ────────────────────────────────
+                        - match:
+                            prefix: "/grafana/api/"
+                          route:
+                            cluster: grafana
+                            prefix_rewrite: "/api/"
+
+                        # ── OTel Collector health / metrics ───────
+                        - match:
+                            prefix: "/otel/metrics"
+                          route:
+                            cluster: otel_metrics
+                            prefix_rewrite: "/metrics"
+                        - match:
+                            prefix: "/otel/"
+                          route:
+                            cluster: otel_health
+                            prefix_rewrite: "/"
+
+                        # ── Prometheus metrics ─────────────────────
+                        - match:
+                            path: "/prometheus"
+                          redirect:
+                            path_redirect: "/prometheus/metrics"
+                        - match:
+                            prefix: "/prometheus/"
+                          route:
+                            cluster: otel_prometheus
+                            prefix_rewrite: "/"
+
+                        # ── NATS monitoring ────────────────────────
+                        - match:
+                            prefix: "/nats/"
+                          route:
+                            cluster: nats_monitoring
+                            prefix_rewrite: "/"
+
+                        # ── ClickHouse direct ping ─────────────────
+                        - match:
+                            path: "/clickhouse/ping"
+                          route:
+                            cluster: clickhouse_direct
+                            prefix_rewrite: "/ping"
+
+                        # ── Landing page ───────────────────────────
+                        - match:
+                            prefix: "/landing/"
+                          route:
+                            cluster: static_files
+                        - match:
+                            path: "/landing"
+                          redirect:
+                            path_redirect: "/landing/"
+
+                        # ── MCP servers ───────────────────────────
+                        - match:
+                            prefix: "/mcp/index/"
+                          route:
+                            cluster: mcp_index
+                            prefix_rewrite: "/"
+                        - match:
+                            prefix: "/mcp/github/"
+                          route:
+                            cluster: mcp_github
+                            prefix_rewrite: "/"
+                        - match:
+                            prefix: "/mcp/google/"
+                          route:
+                            cluster: mcp_google
+                            prefix_rewrite: "/"
+                        - match:
+                            prefix: "/mcp/slack/"
+                          route:
+                            cluster: mcp_slack
+                            prefix_rewrite: "/"
+                        - match:
+                            prefix: "/mcp/notion/"
+                          route:
+                            cluster: mcp_notion
+                            prefix_rewrite: "/"
+                        - match:
+                            prefix: "/mcp/twitter/"
+                          route:
+                            cluster: mcp_twitter
+                            prefix_rewrite: "/"
+
+                        # ── ActivityWatch ─────────────────────────
+                        - match:
+                            prefix: "/activitywatch/"
+                          route:
+                            cluster: activitywatch
+                            prefix_rewrite: "/"
+
+                        # ── Chat webhooks ────────────────────────
+                        - match:
+                            prefix: "/webhook/telegram"
+                          route:
+                            cluster: chat_service
+                        - match:
+                            prefix: "/webhook/discord"
+                          route:
+                            cluster: chat_service
+                        - match:
+                            prefix: "/webhook/whatsapp"
+                          route:
+                            cluster: chat_service
+
+                        # ── Agentd (gRPC-JSON transcoded) ─────────
+                        - match:
+                            prefix: "/agentd.v1.Agentd/"
+                          route:
+                            cluster: agentd_grpc
+                            timeout: 300s
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
+
+                        # ── Default: static files (Smith client) ──
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: static_files
+
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: true
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain:
+                      filename: /etc/envoy/certs/server.crt
+                    private_key:
+                      filename: /etc/envoy/certs/server.key
+                validation_context:
+                  trusted_ca:
+                    filename: /etc/envoy/certs/ca.crt
+
+    # ── OTLP gRPC ingestion (no TLS) ──────────────────────────────
+    - name: otlp_grpc_ingestion
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 4317
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.tcp_proxy
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
+                stat_prefix: otlp_grpc
+                cluster: otel_grpc
+
+    # ── OTLP HTTP ingestion (no TLS) ──────────────────────────────
+    - name: otlp_http_ingestion
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 4318
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: otlp_http
+                codec_type: AUTO
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: otlp_http_routes
+                  virtual_hosts:
+                    - name: otlp
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: otel_http
+
+  clusters:
+    - name: managerd
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: managerd
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: managerd
+                      port_value: 6174
+
+    - name: static_files
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: static_files
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: static-files
+                      port_value: 8080
+
+    - name: grafana
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: grafana
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: grafana
+                      port_value: 3000
+
+    - name: otel_health
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: otel_health
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: otel-collector
+                      port_value: 13133
+
+    - name: otel_metrics
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: otel_metrics
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: otel-collector
+                      port_value: 8888
+
+    - name: otel_prometheus
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: otel_prometheus
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: otel-collector
+                      port_value: 8889
+
+    - name: otel_grpc
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: otel_grpc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: otel-collector
+                      port_value: 4317
+
+    - name: otel_http
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: otel_http
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: otel-collector
+                      port_value: 4318
+
+    - name: nats_monitoring
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: nats_monitoring
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: nats
+                      port_value: 8222
+
+    - name: clickhouse_direct
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: clickhouse_direct
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: clickhouse
+                      port_value: 8123
+
+    - name: mcp_index
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: mcp_index
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mcp-index
+                      port_value: 9200
+
+    - name: mcp_github
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: mcp_github
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mcp-github
+                      port_value: 9100
+
+    - name: mcp_google
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: mcp_google
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mcp-google
+                      port_value: 9100
+
+    - name: mcp_slack
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: mcp_slack
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mcp-slack
+                      port_value: 9100
+
+    - name: mcp_notion
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: mcp_notion
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mcp-notion
+                      port_value: 9100
+
+    - name: mcp_twitter
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: mcp_twitter
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: mcp-twitter
+                      port_value: 9100
+
+    - name: activitywatch
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: activitywatch
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: activitywatch
+                      port_value: 5600
+
+    - name: ext_authz
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: ext_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: smith-ext-authz
+                      port_value: 9191
+
+    - name: opa_authz
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: opa_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: opa-management
+                      port_value: 9292
+
+    - name: chat_service
+      type: STRICT_DNS
+      load_assignment:
+        cluster_name: chat_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: smith-chat-daemon
+                      port_value: 8090
+
+    - name: agentd_grpc
+      type: STATIC
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: agentd_grpc
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    pipe:
+                      path: /tmp/agentd-grpc.sock

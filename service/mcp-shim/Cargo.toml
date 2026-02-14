@@ -1,0 +1,21 @@
+[package]
+name = "mcp-shim"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "mcp-shim"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = { version = "0.7", features = ["json"] }
+tower-http = { version = "0.5", features = ["cors"] }
+clap = { workspace = true }
+toml = "0.8"
+regex = "1.10"
