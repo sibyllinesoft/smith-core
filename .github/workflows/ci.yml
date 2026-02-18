@@ -67,6 +67,14 @@ jobs:
         run: npm run build --workspaces --if-present
 
       - name: Publish installer to npm
+        if: env.NPM_TOKEN != ''
         run: npm publish --workspace installer --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Skip publish (no token)
+        if: env.NPM_TOKEN == ''
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: echo "⚠️ NPM_TOKEN not set, skipping npm publish"
