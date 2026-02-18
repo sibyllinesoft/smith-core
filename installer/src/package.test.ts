@@ -4,7 +4,7 @@ import { join } from "path";
 import { findSmithRoot } from "./lib.js";
 
 const smithRoot = findSmithRoot(process.cwd())!;
-const pkgDir = join(smithRoot, "packages", "smith-installer");
+const pkgDir = join(smithRoot, "installer");
 
 describe("package.json manifest", () => {
   const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
@@ -32,7 +32,7 @@ describe("package.json manifest", () => {
     expect(pkg.exports["."].types).toBe("./dist/index.d.ts");
   });
 
-  it("has files array including dist, agents.md, skills", () => {
+  it("has files array including dist, agents.md, and skills", () => {
     expect(pkg.files).toContain("dist");
     expect(pkg.files).toContain("agents.md");
     expect(pkg.files).toContain("skills");
@@ -42,9 +42,9 @@ describe("package.json manifest", () => {
     expect(pkg.type).toBe("module");
   });
 
-  it("engines requires node >= 20", () => {
+  it("engines requires node >= 22", () => {
     expect(pkg.engines).toBeDefined();
-    expect(pkg.engines.node).toMatch(/>=\s*20/);
+    expect(pkg.engines.node).toMatch(/>=\s*22/);
   });
 });
 
@@ -52,20 +52,19 @@ describe("agents.md", () => {
   const agentsMd = readFileSync(join(pkgDir, "agents.md"), "utf8");
   const lines = agentsMd.split("\n");
 
-  it("exists and has at least 50 lines", () => {
-    expect(lines.length).toBeGreaterThanOrEqual(50);
+  it("exists and has at least 30 lines", () => {
+    expect(lines.length).toBeGreaterThanOrEqual(30);
   });
 
   it("has key headings", () => {
-    expect(agentsMd).toContain("# Smith Installer Agent");
+    expect(agentsMd).toContain("# Smith Core Installer & Configuration Agent");
     expect(agentsMd).toContain("## Principles");
-    expect(agentsMd).toContain("## Workflow Overview");
+    expect(agentsMd).toContain("## Workflow");
   });
 
-  const stepPrefixes = ["00", "10", "20", "25", "30", "35", "40", "50", "60", "90"];
-
-  it.each(stepPrefixes)("references step %s script", (prefix) => {
-    const pattern = new RegExp(`${prefix}-[a-z-]+\\.sh`);
-    expect(agentsMd, `agents.md missing step ${prefix}`).toMatch(pattern);
+  it("references bootstrap commands used in this repo", () => {
+    expect(agentsMd).toContain("docker compose up -d");
+    expect(agentsMd).toContain("cargo build --workspace");
+    expect(agentsMd).toContain("npm install");
   });
 });

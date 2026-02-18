@@ -48,11 +48,8 @@ impl PostgresPolicyStore {
         let mgr_config = deadpool_postgres::ManagerConfig {
             recycling_method: deadpool_postgres::RecyclingMethod::Fast,
         };
-        let mgr = deadpool_postgres::Manager::from_config(
-            pg_config,
-            tokio_postgres::NoTls,
-            mgr_config,
-        );
+        let mgr =
+            deadpool_postgres::Manager::from_config(pg_config, tokio_postgres::NoTls, mgr_config);
 
         let pool = deadpool_postgres::Pool::builder(mgr)
             .max_size(4)
@@ -101,7 +98,10 @@ impl PolicyStore for PostgresPolicyStore {
             })
             .collect::<Vec<_>>();
 
-        info!("loaded {} active OPA policies from PostgreSQL", policies.len());
+        info!(
+            "loaded {} active OPA policies from PostgreSQL",
+            policies.len()
+        );
         Ok(policies)
     }
 }

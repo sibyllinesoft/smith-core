@@ -1,58 +1,54 @@
 ---
-description: Generate mTLS certificates for the observability gateway
+description: Generate local mTLS certificates for the Envoy gateway
 ---
-# Step 20: Generate Certificates
+# Generate Certs
 
-Run: `bash scripts/bootstrap/steps/20-generate-certs.sh`
+Run:
+
+```bash
+bash infra/envoy/certs/generate-certs.sh
+```
 
 ## What It Does
 
-Generates mTLS certificates used by the Envoy gateway for secure communication between services. Delegates to `observability/deploy/certs/generate-certs.sh`.
+This skill generates the mTLS certificate chain used by the local Envoy gateway.
 
-Produces in `observability/deploy/certs/generated/`:
-- `ca.crt` / `ca.key` — Certificate Authority
-- `server.crt` / `server.key` — Server certificate (for Envoy)
-- `client.crt` / `client.key` — Client certificate (for curl/services)
+1. Creates a self-signed local CA certificate.
+2. Creates a server certificate for `smith-gateway` / `localhost`.
+3. Creates a client certificate for bridge-side mTLS calls.
+4. Writes outputs to `infra/envoy/certs/generated/`.
 
 ## Prerequisites
 
-- `openssl` must be installed
-- The certificate generation script must exist at `observability/deploy/certs/generate-certs.sh`
-
-## Environment Variables
-
-None specific to this step.
+- `openssl` must be available on PATH.
+- The repo must contain `infra/envoy/certs/generate-certs.sh`.
 
 ## Expected Output
 
-If certs already exist:
-```
-[ OK ] Certificates already exist in observability/deploy/certs/generated
-```
+The script reports generated artifacts and lists files in:
 
-If generating:
-```
-[INFO] Generating mTLS certificates...
-[ OK ] Certificates generated in observability/deploy/certs/generated
-```
+- `infra/envoy/certs/generated/ca.crt`
+- `infra/envoy/certs/generated/ca.key`
+- `infra/envoy/certs/generated/server.crt`
+- `infra/envoy/certs/generated/server.key`
+- `infra/envoy/certs/generated/client.crt`
+- `infra/envoy/certs/generated/client.key`
 
 ## Reading Results
 
-After running, verify the cert files exist:
-```bash
-ls observability/deploy/certs/generated/
-# Should show: ca.crt ca.key client.crt client.key server.crt server.key
-```
+- If files already exist, the script exits successfully without rotating certs.
+- Set `SMITH_FORCE_CERTS=1` to regenerate certificates intentionally.
+- These certs are mounted into `envoy` by `docker-compose.yaml`.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Certificate generation script not found" | Missing `generate-certs.sh` | Ensure the repo is fully cloned (not shallow) |
-| "openssl is required" | openssl not installed | Install via package manager |
-| "ca.crt not found" after generation | Script failed silently | Run `bash observability/deploy/certs/generate-certs.sh` manually and check output |
+| `openssl: command not found` | OpenSSL missing | Install OpenSSL via package manager |
+| `Permission denied` writing files | Directory ownership/permissions issue | Fix permissions for `infra/envoy/certs/generated` |
+| Envoy TLS startup error after generation | Corrupted or partial cert set | Re-run with `SMITH_FORCE_CERTS=1` |
+| Client handshake fails | Client cert paths not wired in runtime env | Set `CLIENT_CERT`, `CLIENT_KEY`, `CA_CERT` correctly |
 
-## Platform Gotchas
+## Notes
 
-- **macOS**: LibreSSL (default) vs OpenSSL — the script should work with both, but if cert generation fails, install OpenSSL via `brew install openssl`
-- **NixOS**: openssl is in the devShell
+For local single-user deployments, generated certs are development trust material and should not be reused across public environments.

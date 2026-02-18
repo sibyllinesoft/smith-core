@@ -1,70 +1,49 @@
 ---
-description: Install container runtime (podman preferred, docker fallback)
+description: Validate container runtime availability for Smith Core services
 ---
-# Step 10: Install Container Runtime
+# Install Runtime
 
-Run: `bash scripts/bootstrap/steps/10-install-runtime.sh`
+Run:
+
+```bash
+docker --version
+docker compose version
+```
 
 ## What It Does
 
-Installs a container runtime and compose tooling. Prefers podman (rootless), falls back to docker.
+This skill validates runtime prerequisites for the infrastructure stack.
 
-1. Checks if a runtime is already available and working
-2. If not, installs the target runtime per distro
-3. Verifies both the runtime and compose command work
-4. On docker+Linux: warns about docker group membership
+1. Confirms Docker engine availability.
+2. Confirms Compose plugin availability.
+3. Blocks bootstrap early if runtime prerequisites are missing.
+4. Keeps installer behavior deterministic.
 
 ## Prerequisites
 
-- Step 00 must have run (needs system profile)
-- Internet access for package downloads
-- `sudo` access for package installation
-
-## Environment Variables
-
-| Variable | Effect |
-|----------|--------|
-| `SMITH_CONTAINER_RUNTIME` | Force `podman` or `docker` (default: podman) |
+- Docker installed on host.
+- Active user has permission to run Docker commands.
 
 ## Expected Output
 
-If runtime already exists:
-```
-[ OK ] Container runtime already available: podman
-[ OK ] Compose available: podman compose
-```
+Both commands return version information without errors.
 
-If installing:
-```
-[INFO] Installing container runtime: podman (distro: arch)
-[INFO] Installing podman via pacman...
-[ OK ] Container runtime: podman
-[ OK ] Compose: podman compose
-```
+## Reading Results
 
-## Installation by Distro
-
-| Distro | Podman | Docker |
-|--------|--------|--------|
-| Arch | `pacman -S podman` | `pacman -S docker docker-compose` |
-| Ubuntu/Debian | `apt install podman` | Official Docker repo + `docker-ce` packages |
-| Fedora | `dnf install podman` | `dnf install docker docker-compose-plugin` |
-| macOS | `brew install podman` | `brew install --cask docker` |
-| NixOS | System config: `virtualisation.podman.enable` | System config: `virtualisation.docker.enable` |
+- If both commands succeed, proceed to stack startup.
+- If either command fails, runtime must be installed/configured first.
+- On macOS, also ensure `gondolin` is installed before enabling persistent VM sessions.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Unsupported distro for podman install" | Unknown distro | Set `SMITH_CONTAINER_RUNTIME=docker` or install manually |
-| "No container runtime available after install" | Install failed silently | Check package manager output, try manual install |
-| "Compose not working" | Missing compose plugin | Install `docker-compose-plugin` or `podman-compose` |
-| Docker permission denied | User not in docker group | Run `sudo usermod -aG docker $USER` then log out/in |
+| `docker: command not found` | Docker not installed | Install Docker |
+| `permission denied` on daemon socket | User not authorized | Add user to Docker group or use sudo |
+| `docker compose` missing | Compose plugin not installed | Install Docker Compose plugin |
+| Daemon not running | Docker service stopped | Start Docker daemon |
+| `gondolin` missing on macOS | Gondolin not installed | Install Gondolin and confirm `gondolin help` succeeds |
 
-## Platform Gotchas
+## Notes
 
-- **macOS Docker**: Requires Docker Desktop to be running after install
-- **macOS Podman**: Needs `podman machine init && podman machine start` for VM setup
-- **Ubuntu < 22.04**: podman may not be in repos; use Docker instead
-- **NixOS**: Runtime install is a no-op; configure via system flake
-- **Fedora + SELinux**: Compose volumes may need `:Z` label suffix
+Installer does not perform OS-level package installation in this repo version.

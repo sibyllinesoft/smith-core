@@ -132,15 +132,12 @@ impl GoogleChatAdapter {
             tokio::fs::read_to_string(&self.config.service_account_json)
                 .await
                 .map_err(|e| {
-                    ChatBridgeError::other(format!(
-                        "failed to read service account file: {e}"
-                    ))
+                    ChatBridgeError::other(format!("failed to read service account file: {e}"))
                 })?
         };
 
-        let sa_key: ServiceAccountKey = serde_json::from_str(&sa_json).map_err(|e| {
-            ChatBridgeError::other(format!("invalid service account JSON: {e}"))
-        })?;
+        let sa_key: ServiceAccountKey = serde_json::from_str(&sa_json)
+            .map_err(|e| ChatBridgeError::other(format!("invalid service account JSON: {e}")))?;
 
         let now = Utc::now().timestamp();
         let claims = JwtClaims {
@@ -151,13 +148,11 @@ impl GoogleChatAdapter {
             exp: now + 3600,
         };
 
-        let key = EncodingKey::from_rsa_pem(sa_key.private_key.as_bytes()).map_err(|e| {
-            ChatBridgeError::other(format!("invalid RSA private key: {e}"))
-        })?;
+        let key = EncodingKey::from_rsa_pem(sa_key.private_key.as_bytes())
+            .map_err(|e| ChatBridgeError::other(format!("invalid RSA private key: {e}")))?;
 
-        let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key).map_err(|e| {
-            ChatBridgeError::other(format!("JWT encoding failed: {e}"))
-        })?;
+        let jwt = encode(&Header::new(Algorithm::RS256), &claims, &key)
+            .map_err(|e| ChatBridgeError::other(format!("JWT encoding failed: {e}")))?;
 
         let resp = self
             .client
@@ -194,11 +189,7 @@ impl GoogleChatAdapter {
         let msg_name = msg.name.unwrap_or_default();
 
         // Extract message ID from name like "spaces/xxx/messages/yyy"
-        let msg_id = msg_name
-            .rsplit('/')
-            .next()
-            .unwrap_or(&msg_name)
-            .to_string();
+        let msg_id = msg_name.rsplit('/').next().unwrap_or(&msg_name).to_string();
 
         let (sender_id, display_name, role) = if let Some(sender) = msg.sender {
             let is_bot = sender.sender_type.as_deref() == Some("BOT");
@@ -290,12 +281,7 @@ impl ChatAdapter for GoogleChatAdapter {
     async fn health_check(&self) -> Result<AdapterStatus> {
         let token = self.get_access_token().await?;
         let url = format!("{}/spaces/{}", GOOGLE_CHAT_API, self.config.space_id);
-        let response = self
-            .client
-            .get(&url)
-            .bearer_auth(&token)
-            .send()
-            .await?;
+        let response = self.client.get(&url).bearer_auth(&token).send().await?;
 
         let ok = response.status().is_success();
         let details = if ok {
@@ -377,11 +363,7 @@ impl ChatAdapter for GoogleChatAdapter {
 
         let resp: GoogleChatMessage = response.json().await?;
         let msg_name = resp.name.unwrap_or_default();
-        let msg_id = msg_name
-            .rsplit('/')
-            .next()
-            .unwrap_or(&msg_name)
-            .to_string();
+        let msg_id = msg_name.rsplit('/').next().unwrap_or(&msg_name).to_string();
 
         let timestamp = resp
             .create_time

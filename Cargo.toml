@@ -10,11 +10,11 @@ members = [
 exclude = ["agent/agentd"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Smith Team"]
 license = "MIT"
-repository = "https://github.com/smithcore/smith-core"
+repository = "https://github.com/sibyllinesoft/smith-core"
 homepage = "https://smithcore.dev"
 description = "Open-source AI agent platform with secure execution and multi-platform chat"
 

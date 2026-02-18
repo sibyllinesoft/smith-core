@@ -1,7 +1,17 @@
 {
   "name": "@sibyllinesoft/smith-installer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI-guided Smith platform installer powered by pi-agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sibyllinesoft/smith-core.git",
+    "directory": "installer"
+  },
+  "homepage": "https://smithcore.dev",
+  "bugs": {
+    "url": "https://github.com/sibyllinesoft/smith-core/issues"
+  },
   "type": "module",
   "bin": {
     "smith-install": "./dist/cli.js"
@@ -20,14 +30,14 @@
     "skills"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "rm -rf dist && tsc",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@mariozechner/pi-coding-agent": "^0.52.0",

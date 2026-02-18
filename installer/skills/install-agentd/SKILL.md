@@ -1,67 +1,46 @@
 ---
-description: Install the agentd binary via cargo or npm
+description: Build and validate the agentd workspace from source
 ---
-# Step 40: Install Agentd
+# Install Agentd
 
-Run: `bash scripts/bootstrap/steps/40-install-agentd.sh`
+Run:
+
+```bash
+cargo build --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd
+```
 
 ## What It Does
 
-Installs the `agentd` binary — the secure capability execution engine.
+This skill prepares the `agentd` binary from source.
 
-1. Checks if agentd is already on PATH (and version matches if pinned)
-2. Selects install method: cargo (preferred) or npm
-3. Installs with retry (up to 3 attempts with exponential backoff)
-4. Verifies the binary is on PATH after installation
+1. Compiles `agent/agentd` and internal crates.
+2. Ensures gRPC support is included (`--features grpc`).
+3. Produces a runnable `agentd` binary for Envoy transcoding flows.
+4. Validates crate path wiring in the extracted repo.
 
 ## Prerequisites
 
-- Step 00 (system profile with cargo/node detection)
-- At least one of `cargo` or `npm` must be available
-- Internet access for package download
-
-## Environment Variables
-
-| Variable | Effect |
-|----------|--------|
-| `SMITH_AGENTD_INSTALL_METHOD` | Force `cargo` or `npm` |
-| `SMITH_AGENTD_VERSION` | Pin a specific version (e.g. `0.5.0`) |
-
-## Agent Decision Point
-
-If both cargo and node are available, **ask the user**:
-
-> "Both cargo and npm are available. Would you like to install agentd via cargo (compiles from source, slower but native) or npm (prebuilt binary, faster)?"
-
-Set `SMITH_AGENTD_INSTALL_METHOD=cargo` or `npm` accordingly.
+- Rust toolchain installed.
+- Cargo dependency resolution functional.
 
 ## Expected Output
 
-If already installed:
-```
-[ OK ] agentd already installed: agentd 0.5.0
-```
+`cargo build --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd` finishes successfully.
 
-If installing via cargo:
-```
-[INFO] Installing agentd via cargo...
-[INFO] Compiling agentd v0.5.0
-[ OK ] agentd installed: agentd 0.5.0
-```
+## Reading Results
+
+- Compile errors indicate source/API drift in `agentd` components.
+- Successful build enables `cargo run --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd -- run ...`.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "No install method available" | Neither cargo nor npm found | Install Rust (`rustup`) or Node.js 20+ |
-| Cargo compile error | Missing system libraries | Install build deps: `build-essential` / `base-devel` / Xcode CLI tools |
-| "agentd not found on PATH" | Cargo/npm bin dir not in PATH | Add `~/.cargo/bin` or npm global bin to PATH |
-| Network timeout | Slow connection | Retry — the script retries 3 times automatically |
-| Version mismatch | Pinned version not available | Check available versions: `cargo search agentd` or `npm view agentd versions` |
+| Dependency fetch failures | Network issue | Retry when registry/network is available |
+| Compile errors | Code mismatch | Fix code and re-run build |
+| Toolchain mismatch | Old Rust version | Update to current stable toolchain |
+| Linker errors | Missing system build deps | Install compiler/linker prerequisites |
 
-## Platform Gotchas
+## Notes
 
-- **Cargo builds**: Can take several minutes on first install (compiles from source)
-- **npm global**: May need `sudo` on some systems, or configure npm prefix
-- **NixOS**: Cargo install may fail due to missing linker; use `nix develop` for proper build env
-- **macOS**: Ensure Xcode CLI tools are installed for cargo builds: `xcode-select --install`
+This is source-build based; no separate package installer is required.

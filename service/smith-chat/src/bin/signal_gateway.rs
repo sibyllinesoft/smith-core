@@ -10,7 +10,11 @@ use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Signal (signal-cli) Gateway → NATS bridge for Smith")]
+#[command(
+    author,
+    version,
+    about = "Signal (signal-cli) Gateway → NATS bridge for Smith"
+)]
 struct Cli {
     /// signal-cli REST API base URL
     #[arg(long, env = "SIGNAL_CLI_URL", default_value = "http://127.0.0.1:8080")]
@@ -21,11 +25,15 @@ struct Cli {
     phone_number: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes

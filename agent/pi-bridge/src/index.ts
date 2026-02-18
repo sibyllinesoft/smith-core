@@ -23,17 +23,28 @@ import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
 
 const sc = StringCodec();
 
+function envMs(name: string, fallback: number, min: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.floor(parsed);
+}
+
 // ── Config ────────────────────────────────────────────────────────────
-const NATS_URL = process.env.SMITH_NATS_URL ?? "nats://127.0.0.1:7222";
+const NATS_URL = process.env.SMITH_NATS_URL ?? "nats://127.0.0.1:4222";
 const SESSION_START_SUBJECT = process.env.SESSION_START_SUBJECT ?? "smith.chatbridge.sessions.start";
 const PROVIDER = (process.env.PI_PROVIDER ?? "anthropic") as any;
 const MODEL_ID = (process.env.PI_MODEL ?? "claude-sonnet-4-5") as any;
 const MCP_INDEX_URL = process.env.MCP_INDEX_URL ?? "http://localhost:9200";
+const MCP_INDEX_API_TOKEN = process.env.MCP_INDEX_API_TOKEN?.trim();
 const AGENTD_URL = process.env.AGENTD_URL ?? "https://localhost:6173";
-const AGENTD_WORKDIR = process.env.AGENTD_WORKDIR ?? "/home/nathan/Projects";
+const AGENTD_WORKDIR = process.env.AGENTD_WORKDIR ?? process.env.HOME ?? process.cwd();
 const AGENTD_PATHS_RW = (process.env.AGENTD_PATHS_RW ?? AGENTD_WORKDIR).split(",").map(s => s.trim()).filter(Boolean);
 const AGENTD_PATHS_RO = (process.env.AGENTD_PATHS_RO ?? "/etc,/usr").split(",").map(s => s.trim()).filter(Boolean);
 const AGENT_ID = process.env.AGENT_ID ?? "smith-default";
+const PI_SESSION_IDLE_TTL_MS = envMs("PI_SESSION_IDLE_TTL_MS", 1_800_000, 5_000);
+const PI_SESSION_CLEANUP_INTERVAL_MS = envMs("PI_SESSION_CLEANUP_INTERVAL_MS", 60_000, 1_000);
 const PG_URL = process.env.PI_BRIDGE_PG ?? "postgresql://smith:smith-dev@postgres:5432/smith";
 const PG_APP_URL = process.env.PI_BRIDGE_PG_APP ?? "postgresql://smith_app:smith-app-dev@postgres:5432/smith";
 const pgPool = new pg.Pool({ connectionString: PG_URL, max: 2 });        // superuser — identity resolution only
@@ -596,9 +607,11 @@ interface AgentSession {
   steeringSub: Subscription;
   responseSubject: string;
   agentd: AgentdRef;
+  canaryExpected: string | null;
   sessionSpan: Span;
   turnCount: number;
   user: ResolvedUser;
+  lastActiveAt: number;
 }
 
 interface McpToolDef {
@@ -608,11 +621,21 @@ interface McpToolDef {
   input_schema?: any;
 }
 
+function mcpIndexHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  if (MCP_INDEX_API_TOKEN) {
+    headers.authorization = `Bearer ${MCP_INDEX_API_TOKEN}`;
+  }
+  return headers;
+}
+
 // ── MCP Tool Discovery ───────────────────────────────────────────────
 
 async function fetchMcpTools(): Promise<McpToolDef[]> {
   try {
-    const resp = await fetch(`${MCP_INDEX_URL}/api/tools`);
+    const resp = await fetch(`${MCP_INDEX_URL}/api/tools`, {
+      headers: mcpIndexHeaders(),
+    });
     if (!resp.ok) {
       console.warn(`[pi-bridge] Failed to fetch MCP tools: ${resp.status}`);
       return [];
@@ -640,7 +663,7 @@ function buildAgentTools(mcpTools: McpToolDef[]): any[] {
         try {
           const resp = await fetch(`${MCP_INDEX_URL}/api/tools/call`, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: mcpIndexHeaders({ "content-type": "application/json" }),
             body: JSON.stringify({
               server: tool.server,
               tool: tool.name,
@@ -2402,6 +2425,12 @@ async function main() {
   const sub = nc.subscribe(SESSION_START_SUBJECT);
   console.log(`[pi-bridge] Listening on ${SESSION_START_SUBJECT}`);
 
+  const cleanupTimer = setInterval(() => {
+    cleanupIdleSessions(nc).catch((err) => {
+      console.error("[pi-bridge] Idle cleanup error:", err);
+    });
+  }, PI_SESSION_CLEANUP_INTERVAL_MS);
+
   for await (const msg of sub) {
     try {
       const request: SessionStartRequest = JSON.parse(sc.decode(msg.data));
@@ -2418,6 +2447,8 @@ async function main() {
       }
     }
   }
+
+  clearInterval(cleanupTimer);
 }
 
 async function handleSessionStart(
@@ -2519,6 +2550,11 @@ async function handleSessionStart(
   // Resolve LLM config from agent profile (user overrides already applied)
   console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] LLM: ${effectiveProfile.provider}/${effectiveProfile.model_id} thinking=${effectiveProfile.thinking_level}`);
 
+  const bootstrapHistory = buildHistoryMessages(request.thread_history ?? []);
+  if (bootstrapHistory.length > 0) {
+    console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Bootstrapped ${bootstrapHistory.length} history messages`);
+  }
+
   // Create pi-agent with direct provider transport
   const baseModel = getModel(effectiveProfile.provider as any, effectiveProfile.model_id as any);
   // Override baseUrl if ANTHROPIC_BASE_URL is set (e.g. for z.ai proxy)
@@ -2535,6 +2571,7 @@ async function handleSessionStart(
       systemPrompt,
       model,
       tools: sessionTools,
+      messages: bootstrapHistory,
       thinkingLevel: effectiveProfile.thinking_level as any,
       ...(effectiveProfile.max_turns != null ? { maxTurns: effectiveProfile.max_turns } : {}),
     },
@@ -2558,9 +2595,11 @@ async function handleSessionStart(
     steeringSub,
     responseSubject,
     agentd: sessionAgentdRef,
+    canaryExpected: canary?.expected ?? null,
     sessionSpan,
     turnCount: 0,
     user: effectiveUser,
+    lastActiveAt: Date.now(),
   };
   sessions.set(sessionId, session);
 
@@ -2806,6 +2845,7 @@ async function runAgentPrompt(
 ) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  session.lastActiveAt = Date.now();
 
   // Intercept /smith commands before sending to LLM
   const cmdResult = await handleSmithCommand(session, prompt);
@@ -2821,7 +2861,7 @@ async function runAgentPrompt(
     return;
   }
 
-  const { agent, responseSubject, sessionSpan, agentd } = session;
+  const { agent, responseSubject, sessionSpan, agentd, canaryExpected } = session;
   const turnIndex = session.turnCount++;
 
   // Clear attachment accumulator for this turn
@@ -2946,6 +2986,20 @@ async function runAgentPrompt(
     // Drain any image attachments accumulated during this turn
     const turnAttachments = agentd.pendingAttachments.splice(0);
 
+    if (canaryExpected) {
+      const verification = verifyCanary(fullResponse || "", canaryExpected);
+      if (!verification.clean) {
+        console.warn(`[pi-bridge] [${sessionId.slice(0, 8)}] Canary verification failed for untrusted agent response`);
+        turnSpan.setStatus({
+          code: SpanStatusCode.ERROR,
+          message: "canary_verification_failed",
+        });
+        fullResponse = "Response blocked: integrity verification failed for untrusted agent output.";
+      } else {
+        fullResponse = verification.stripped;
+      }
+    }
+
     console.log(
       `[pi-bridge] [${sessionId.slice(0, 8)}] Response: ${fullResponse.length} chars, ${turnAttachments.length} attachments`
     );
@@ -2995,6 +3049,7 @@ async function handleSteering(nc: NatsConnection, sessionId: string) {
 
   for await (const msg of session.steeringSub) {
     try {
+      session.lastActiveAt = Date.now();
       // Immediately ack so the daemon knows this session is alive
       if (msg.reply) {
         msg.respond(sc.encode(JSON.stringify({ status: "ack", session_id: sessionId })));
@@ -3010,6 +3065,51 @@ async function handleSteering(nc: NatsConnection, sessionId: string) {
         err
       );
     }
+  }
+}
+
+function closeSession(
+  nc: NatsConnection,
+  sessionId: string,
+  reason: string,
+  idleMs?: number,
+) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  try {
+    session.agent.abort();
+  } catch {}
+  try {
+    session.steeringSub.unsubscribe();
+  } catch {}
+  try {
+    session.sessionSpan.end();
+  } catch {}
+  sessions.delete(sessionId);
+
+  nc.publish(
+    "smith.telemetry.session.closed",
+    sc.encode(JSON.stringify({
+      session_id: sessionId,
+      reason,
+      idle_ms: idleMs ?? 0,
+      timestamp: new Date().toISOString(),
+    })),
+  );
+}
+
+async function cleanupIdleSessions(nc: NatsConnection) {
+  const now = Date.now();
+  for (const [sessionId, session] of sessions.entries()) {
+    if (session.agent.state.isStreaming) continue;
+    const idleMs = now - session.lastActiveAt;
+    if (idleMs < PI_SESSION_IDLE_TTL_MS) continue;
+
+    console.log(
+      `[pi-bridge] [${sessionId.slice(0, 8)}] Expiring idle session after ${Math.round(idleMs / 1000)}s`,
+    );
+    closeSession(nc, sessionId, "idle_timeout", idleMs);
   }
 }
 

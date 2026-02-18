@@ -106,9 +106,7 @@ impl SignalAdapter {
         let ts = data
             .timestamp
             .or(envelope.timestamp)
-            .map(|ms| {
-                DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now)
-            })
+            .map(|ms| DateTime::from_timestamp_millis(ms).unwrap_or_else(Utc::now))
             .unwrap_or_else(Utc::now);
 
         let msg_id = format!("{}-{}", source, ts.timestamp_millis());

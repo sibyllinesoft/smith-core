@@ -61,11 +61,7 @@ pub struct PairingStore {
 }
 
 impl PairingStore {
-    pub async fn new(
-        redis_url: &str,
-        code_ttl_secs: u64,
-        pairing_ttl_secs: u64,
-    ) -> Result<Self> {
+    pub async fn new(redis_url: &str, code_ttl_secs: u64, pairing_ttl_secs: u64) -> Result<Self> {
         let client = redis::Client::open(redis_url.to_string())
             .with_context(|| format!("failed to open redis for pairing store: {redis_url}"))?;
         let manager = client
@@ -152,8 +148,8 @@ impl PairingStore {
 
         match raw {
             Some(data) => {
-                let pairing: Pairing = serde_json::from_str(&data)
-                    .context("failed to deserialize pairing record")?;
+                let pairing: Pairing =
+                    serde_json::from_str(&data).context("failed to deserialize pairing record")?;
                 Ok(Some(pairing))
             }
             None => Ok(None),
@@ -206,7 +202,10 @@ mod tests {
     #[test]
     fn test_dm_policy_from_str() {
         assert_eq!("pairing".parse::<DmPolicy>().unwrap(), DmPolicy::Pairing);
-        assert_eq!("allowlist".parse::<DmPolicy>().unwrap(), DmPolicy::Allowlist);
+        assert_eq!(
+            "allowlist".parse::<DmPolicy>().unwrap(),
+            DmPolicy::Allowlist
+        );
         assert_eq!("open".parse::<DmPolicy>().unwrap(), DmPolicy::Open);
         assert!("unknown".parse::<DmPolicy>().is_err());
     }

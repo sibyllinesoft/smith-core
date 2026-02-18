@@ -77,21 +77,26 @@ pub async fn exchange_code(
         anyhow::bail!("token exchange returned {status}: {body}");
     }
 
-    let token: TokenResponse = resp.json().await.context("failed to parse token response")?;
-    token
-        .refresh_token
-        .context("no refresh_token in response (user may have already granted access — revoke and retry)")
+    let token: TokenResponse = resp
+        .json()
+        .await
+        .context("failed to parse token response")?;
+    token.refresh_token.context(
+        "no refresh_token in response (user may have already granted access — revoke and retry)",
+    )
 }
 
 // ── Credential Writer ───────────────────────────────────────────────────
 
-pub async fn write_credentials(
-    provider: &OAuthProvider,
-    refresh_token: &str,
-) -> Result<()> {
+pub async fn write_credentials(provider: &OAuthProvider, refresh_token: &str) -> Result<()> {
     tokio::fs::create_dir_all(&provider.credential_dir)
         .await
-        .with_context(|| format!("failed to create credential dir: {:?}", provider.credential_dir))?;
+        .with_context(|| {
+            format!(
+                "failed to create credential dir: {:?}",
+                provider.credential_dir
+            )
+        })?;
 
     // Plain refresh token file (used by google-workspace MCP server)
     let token_path = provider.credential_dir.join("refresh_token");
@@ -132,8 +137,12 @@ pub fn has_valid_credentials(provider: &OAuthProvider) -> bool {
 // ── Provider Factory ────────────────────────────────────────────────────
 
 pub fn google_provider_from_env(credentials_dir: &Path) -> Option<OAuthProvider> {
-    let client_id = std::env::var("GOOGLE_CLIENT_ID").ok().filter(|s| !s.is_empty())?;
-    let client_secret = std::env::var("GOOGLE_CLIENT_SECRET").ok().filter(|s| !s.is_empty())?;
+    let client_id = std::env::var("GOOGLE_CLIENT_ID")
+        .ok()
+        .filter(|s| !s.is_empty())?;
+    let client_secret = std::env::var("GOOGLE_CLIENT_SECRET")
+        .ok()
+        .filter(|s| !s.is_empty())?;
 
     Some(OAuthProvider {
         name: "google".to_string(),
@@ -167,10 +176,13 @@ impl OAuthState {
         let mut pending = self.pending.lock().await;
         // Evict expired entries
         pending.retain(|_, v| v.created_at.elapsed().as_secs() < PENDING_TTL_SECS);
-        pending.insert(token, PendingAuth {
-            server,
-            created_at: Instant::now(),
-        });
+        pending.insert(
+            token,
+            PendingAuth {
+                server,
+                created_at: Instant::now(),
+            },
+        );
     }
 
     pub async fn take_pending(&self, token: &str) -> Option<PendingAuth> {

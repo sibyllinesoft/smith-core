@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check root workspace
+        run: cargo check --workspace
+
+      - name: Check agentd workspace
+        run: cargo check --manifest-path agent/agentd/Cargo.toml
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Build Node workspaces
+        run: npm run build --workspaces --if-present
+
+      - name: Run installer tests
+        run: npm run test --workspace installer
+
+      - name: Verify installer package contents
+        run: npm pack --dry-run --workspace installer

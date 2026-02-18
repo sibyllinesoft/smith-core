@@ -145,7 +145,7 @@ impl HealthService {
         info!("  - POST /health/isolation - Run comprehensive isolation tests");
         info!("  - GET  /ready            - Simple readiness check");
 
-        warp::serve(routes).run(([0, 0, 0, 0], port)).await;
+        warp::serve(routes).run(([127, 0, 0, 1], port)).await;
 
         Ok(())
     }

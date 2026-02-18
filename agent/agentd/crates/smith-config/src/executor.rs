@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 /// Executor service configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +223,13 @@ pub struct VmPoolConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// VM execution method.
+    ///
+    /// - `host`: execute directly via host shell in the session volume
+    /// - `gondolin`: execute via the Gondolin adapter command
+    #[serde(default)]
+    pub method: VmMethod,
+
     /// Root directory where per-session volumes are stored
     pub volume_root: PathBuf,
 
@@ -257,12 +265,110 @@ pub struct VmPoolConfig {
     /// Optional bootstrap command invoked once when the VM volume is created
     #[serde(default)]
     pub bootstrap_command: Option<Vec<String>>,
+
+    /// Gondolin adapter command configuration
+    #[serde(default)]
+    pub gondolin: GondolinAdapterConfig,
+}
+
+/// VM execution method selector for persistent session environments.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum VmMethod {
+    /// Execute commands directly via the host shell process.
+    Host,
+    /// Execute commands through the Gondolin adapter command.
+    Gondolin,
+}
+
+impl Default for VmMethod {
+    fn default() -> Self {
+        #[cfg(target_os = "macos")]
+        {
+            VmMethod::Gondolin
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            VmMethod::Host
+        }
+    }
+}
+
+impl FromStr for VmMethod {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "host" | "host-shell" | "host_shell" => Ok(VmMethod::Host),
+            "gondolin" => Ok(VmMethod::Gondolin),
+            other => Err(anyhow::anyhow!(
+                "Invalid VM method '{}'; expected one of: host, gondolin",
+                other
+            )),
+        }
+    }
+}
+
+/// Gondolin command adapter settings used by the VM pool runner.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GondolinAdapterConfig {
+    /// Adapter executable path
+    #[serde(default = "default_gondolin_command")]
+    pub command: PathBuf,
+    /// Arguments passed before the shell command.
+    ///
+    /// Supports placeholders:
+    /// - `{session_id}`
+    /// - `{workdir}`
+    ///
+    /// Example default:
+    /// `["exec", "--"]` -> `gondolin exec -- /bin/bash -lc "<command>"`
+    #[serde(default = "default_gondolin_args")]
+    pub args: Vec<String>,
+}
+
+fn default_gondolin_command() -> PathBuf {
+    PathBuf::from("gondolin")
+}
+
+fn default_gondolin_args() -> Vec<String> {
+    vec!["exec".to_string(), "--".to_string()]
+}
+
+impl Default for GondolinAdapterConfig {
+    fn default() -> Self {
+        Self {
+            command: default_gondolin_command(),
+            args: default_gondolin_args(),
+        }
+    }
+}
+
+impl GondolinAdapterConfig {
+    fn validate(&self) -> Result<()> {
+        if self.command.as_os_str().is_empty() {
+            return Err(anyhow::anyhow!(
+                "vm_pool.gondolin.command must not be empty"
+            ));
+        }
+
+        for arg in &self.args {
+            if arg.trim().is_empty() {
+                return Err(anyhow::anyhow!(
+                    "vm_pool.gondolin.args must not contain empty entries"
+                ));
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for VmPoolConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            method: VmMethod::default(),
             volume_root: PathBuf::from("/var/lib/smith/executor/vm-pool"),
             nix_profile: None,
             shell: PathBuf::from("/bin/bash"),
@@ -274,6 +380,7 @@ impl Default for VmPoolConfig {
             backup_after_seconds: None,
             backup_destination: None,
             bootstrap_command: None,
+            gondolin: GondolinAdapterConfig::default(),
         }
     }
 }
@@ -333,6 +440,12 @@ impl VmPoolConfig {
                     )
                 })?;
             }
+        }
+
+        if self.method == VmMethod::Gondolin {
+            self.gondolin
+                .validate()
+                .context("gondolin adapter config is invalid")?;
         }
 
         Ok(())
@@ -1024,6 +1137,32 @@ impl ExecutorConfig {
             }
         }
 
+        if let Ok(raw_enabled) = env::var("SMITH_EXECUTOR_VM_POOL_ENABLED") {
+            let enabled = Self::parse_env_bool(&raw_enabled)
+                .context("Invalid SMITH_EXECUTOR_VM_POOL_ENABLED value")?;
+            self.vm_pool.enabled = enabled;
+        }
+
+        if let Ok(raw_method) = env::var("SMITH_EXECUTOR_VM_METHOD") {
+            let method = VmMethod::from_str(raw_method.trim())
+                .context("Invalid SMITH_EXECUTOR_VM_METHOD value")?;
+            self.vm_pool.method = method;
+        }
+
+        if let Ok(raw_command) = env::var("SMITH_EXECUTOR_GONDOLIN_COMMAND") {
+            let trimmed = raw_command.trim();
+            if !trimmed.is_empty() {
+                self.vm_pool.gondolin.command = PathBuf::from(trimmed);
+            }
+        }
+
+        if let Ok(raw_args) = env::var("SMITH_EXECUTOR_GONDOLIN_ARGS") {
+            let parsed_args = Self::parse_env_server_list(&raw_args);
+            if !parsed_args.is_empty() {
+                self.vm_pool.gondolin.args = parsed_args;
+            }
+        }
+
         Ok(())
     }
 
@@ -1033,6 +1172,17 @@ impl ExecutorConfig {
             .filter(|part| !part.is_empty())
             .map(|part| part.to_string())
             .collect()
+    }
+
+    fn parse_env_bool(raw: &str) -> Result<bool> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => Ok(true),
+            "0" | "false" | "no" | "off" => Ok(false),
+            other => Err(anyhow::anyhow!(
+                "invalid boolean value '{}'; expected one of: true,false,1,0,yes,no,on,off",
+                other
+            )),
+        }
     }
 }
 
@@ -1370,6 +1520,121 @@ mod tests {
         restore_env_var("SMITH_NATS_URL", prev_nats_url);
         restore_env_var("SMITH_NATS_JETSTREAM_DOMAIN", prev_domain);
         restore_env_var("SMITH_EXECUTOR_JETSTREAM_DOMAIN", prev_exec_domain);
+    }
+
+    #[test]
+    fn test_vm_method_default_is_platform_specific() {
+        #[cfg(target_os = "macos")]
+        assert_eq!(VmMethod::default(), VmMethod::Gondolin);
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(VmMethod::default(), VmMethod::Host);
+    }
+
+    #[test]
+    fn test_vm_pool_gondolin_requires_non_empty_command() {
+        let temp = tempdir().unwrap();
+        let mut config = VmPoolConfig::default();
+        config.enabled = true;
+        config.method = VmMethod::Gondolin;
+        config.volume_root = temp.path().join("vm-pool");
+        config.gondolin.command = PathBuf::new();
+
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("gondolin"));
+    }
+
+    #[test]
+    fn test_executor_env_overrides_vm_method_and_gondolin_adapter() {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("executor-vm.toml");
+
+        let mut config = ExecutorConfig::development();
+        config.work_root = temp_dir.path().join("work");
+        config.state_dir = temp_dir.path().join("state");
+        config.audit_dir = temp_dir.path().join("audit");
+        config.egress_proxy_socket = temp_dir.path().join("proxy.sock");
+        config.security.pubkeys_dir = temp_dir.path().join("pubkeys");
+        config.capabilities.derivations_path = temp_dir.path().join("capability.json");
+        config.attestation.provenance_output_dir = temp_dir.path().join("attestation_outputs");
+        config.nats_config.tls_cert = None;
+        config.nats_config.tls_key = None;
+        config.nats_config.tls_ca = None;
+        config.vm_pool.volume_root = temp_dir.path().join("vm-pool");
+        config.vm_pool.enabled = false;
+
+        let toml = toml::to_string(&config).unwrap();
+        std::fs::write(&config_path, toml).unwrap();
+
+        let prev_method = env::var("SMITH_EXECUTOR_VM_METHOD").ok();
+        let prev_command = env::var("SMITH_EXECUTOR_GONDOLIN_COMMAND").ok();
+        let prev_args = env::var("SMITH_EXECUTOR_GONDOLIN_ARGS").ok();
+        let prev_enabled = env::var("SMITH_EXECUTOR_VM_POOL_ENABLED").ok();
+
+        env::set_var("SMITH_EXECUTOR_VM_POOL_ENABLED", "true");
+        env::set_var("SMITH_EXECUTOR_VM_METHOD", "gondolin");
+        env::set_var("SMITH_EXECUTOR_GONDOLIN_COMMAND", "/usr/local/bin/gondolin");
+        env::set_var("SMITH_EXECUTOR_GONDOLIN_ARGS", "exec,--vm,smith,--");
+
+        let loaded = ExecutorConfig::load(&config_path).unwrap();
+        assert!(loaded.vm_pool.enabled);
+        assert_eq!(loaded.vm_pool.method, VmMethod::Gondolin);
+        assert_eq!(
+            loaded.vm_pool.gondolin.command,
+            PathBuf::from("/usr/local/bin/gondolin")
+        );
+        assert_eq!(
+            loaded.vm_pool.gondolin.args,
+            vec![
+                "exec".to_string(),
+                "--vm".to_string(),
+                "smith".to_string(),
+                "--".to_string()
+            ]
+        );
+
+        restore_env_var("SMITH_EXECUTOR_VM_POOL_ENABLED", prev_enabled);
+        restore_env_var("SMITH_EXECUTOR_VM_METHOD", prev_method);
+        restore_env_var("SMITH_EXECUTOR_GONDOLIN_COMMAND", prev_command);
+        restore_env_var("SMITH_EXECUTOR_GONDOLIN_ARGS", prev_args);
+    }
+
+    #[test]
+    fn test_executor_env_override_rejects_invalid_vm_pool_enabled() {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("executor-vm-invalid-enabled.toml");
+
+        let mut config = ExecutorConfig::development();
+        config.work_root = temp_dir.path().join("work");
+        config.state_dir = temp_dir.path().join("state");
+        config.audit_dir = temp_dir.path().join("audit");
+        config.egress_proxy_socket = temp_dir.path().join("proxy.sock");
+        config.security.pubkeys_dir = temp_dir.path().join("pubkeys");
+        config.capabilities.derivations_path = temp_dir.path().join("capability.json");
+        config.attestation.provenance_output_dir = temp_dir.path().join("attestation_outputs");
+        config.nats_config.tls_cert = None;
+        config.nats_config.tls_key = None;
+        config.nats_config.tls_ca = None;
+
+        let toml = toml::to_string(&config).unwrap();
+        std::fs::write(&config_path, toml).unwrap();
+
+        let prev_enabled = env::var("SMITH_EXECUTOR_VM_POOL_ENABLED").ok();
+        env::set_var("SMITH_EXECUTOR_VM_POOL_ENABLED", "definitely-not-bool");
+
+        let result = ExecutorConfig::load(&config_path);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("SMITH_EXECUTOR_VM_POOL_ENABLED"));
+
+        restore_env_var("SMITH_EXECUTOR_VM_POOL_ENABLED", prev_enabled);
     }
 
     #[test]

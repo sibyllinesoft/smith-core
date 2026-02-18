@@ -1,11 +1,16 @@
 {
   "name": "smith-cron",
   "version": "1.0.0",
+  "description": "Smith Core scheduler service",
   "type": "module",
   "private": true,
+  "license": "MIT",
   "dependencies": {
     "croner": "^9.0.0",
     "nats": "^2.29.1",
     "pg": "^8.13.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

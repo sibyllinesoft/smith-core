@@ -7,6 +7,7 @@ use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::Value;
+use smith_config::executor::VmMethod;
 use smith_protocol::ExecutionStatus;
 use tokio::process::Command;
 use tokio::sync::oneshot;
@@ -74,11 +75,33 @@ impl ShellExecRunner {
             "Executing shell command inside persistent VM"
         );
 
-        let mut command = Command::new(guard.shell_path());
-        for arg in guard.shell_args() {
-            command.arg(arg);
-        }
-        command.arg(&parsed.command);
+        let mut command = match guard.method() {
+            VmMethod::Host => {
+                let mut command = Command::new(guard.shell_path());
+                for arg in guard.shell_args() {
+                    command.arg(arg);
+                }
+                command.arg(&parsed.command);
+                command
+            }
+            VmMethod::Gondolin => {
+                let gondolin = guard.gondolin_config();
+                let mut command = Command::new(&gondolin.command);
+                for arg in &gondolin.args {
+                    command.arg(expand_gondolin_arg_template(
+                        arg,
+                        guard.session_id(),
+                        guard.workdir(),
+                    ));
+                }
+                command.arg(guard.shell_path());
+                for arg in guard.shell_args() {
+                    command.arg(arg);
+                }
+                command.arg(&parsed.command);
+                command
+            }
+        };
         command.current_dir(guard.workdir());
         command.kill_on_drop(true);
         command.stdout(Stdio::piped());
@@ -86,6 +109,11 @@ impl ShellExecRunner {
         for (key, value) in guard.environment() {
             command.env(key, value);
         }
+        command.env(
+            "SMITH_VM_METHOD",
+            format!("{:?}", guard.method()).to_lowercase(),
+        );
+        command.env("SMITH_VM_SESSION_ID", guard.session_id().to_string());
         command.env("SMITH_TRACE_ID", ctx.trace_id.clone());
 
         let result = self
@@ -97,7 +125,22 @@ impl ShellExecRunner {
                 ctx,
                 out,
             )
-            .await?;
+            .await;
+
+        let result = match result {
+            Ok(result) => result,
+            Err(err) => {
+                if guard.method() == VmMethod::Gondolin {
+                    warn!(
+                        session_id = %session.session_id,
+                        error = %err,
+                        "Gondolin VM execution failed; falling back to ephemeral sandbox"
+                    );
+                    return Ok(None);
+                }
+                return Err(err);
+            }
+        };
 
         Ok(Some(result))
     }
@@ -419,6 +462,14 @@ impl ShellExecRunner {
     }
 }
 
+fn expand_gondolin_arg_template(template: &str, session_id: uuid::Uuid, workdir: &Path) -> String {
+    let session = session_id.to_string();
+    let workdir = workdir.display().to_string();
+    template
+        .replace("{session_id}", &session)
+        .replace("{workdir}", &workdir)
+}
+
 #[async_trait]
 impl Runner for ShellExecRunner {
     fn digest(&self) -> String {
@@ -467,7 +518,7 @@ mod tests {
     use crate::runners::{MemoryOutputSink, Scope};
     use serde_json::json;
     use smith_protocol::ExecutionLimits;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use tempfile::TempDir;
 
     // ===== ShellExecRunner Creation Tests =====
@@ -588,6 +639,21 @@ mod tests {
     fn test_default_timeout_ms() {
         assert_eq!(default_timeout_ms(), DEFAULT_TIMEOUT_MS);
         assert_eq!(DEFAULT_TIMEOUT_MS, 30_000);
+    }
+
+    #[test]
+    fn test_expand_gondolin_arg_template() {
+        let session_id = uuid::Uuid::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap();
+        let expanded = super::expand_gondolin_arg_template(
+            "--vm={session_id}@{workdir}",
+            session_id,
+            Path::new("/tmp/smith-vm"),
+        );
+
+        assert_eq!(
+            expanded,
+            "--vm=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa@/tmp/smith-vm"
+        );
     }
 
     // ===== Integration Tests (require async runtime) =====

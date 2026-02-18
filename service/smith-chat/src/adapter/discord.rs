@@ -60,7 +60,10 @@ impl DiscordAdapter {
         let timestamp = DateTime::parse_from_rfc3339(&msg.timestamp)
             .map(|dt| dt.with_timezone(&Utc))
             .map_err(|err| {
-                ChatBridgeError::other(format!("invalid Discord timestamp `{}`: {err}", msg.timestamp))
+                ChatBridgeError::other(format!(
+                    "invalid Discord timestamp `{}`: {err}",
+                    msg.timestamp
+                ))
             })?;
 
         let (sender_id, display_name, username, role) = if let Some(author) = msg.author {
@@ -113,9 +116,7 @@ impl DiscordAdapter {
             }
         }
 
-        let thread_root = msg
-            .message_reference
-            .and_then(|r| r.message_id);
+        let thread_root = msg.message_reference.and_then(|r| r.message_id);
 
         Ok(BridgeMessage {
             id: msg.id,
@@ -171,7 +172,10 @@ impl ChatAdapter for DiscordAdapter {
         let details = if ok {
             None
         } else {
-            Some(format!("Discord health check returned {}", response.status()))
+            Some(format!(
+                "Discord health check returned {}",
+                response.status()
+            ))
         };
 
         Ok(AdapterStatus {
@@ -355,7 +359,11 @@ impl DiscordAdapter {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(1.0);
                 let wait = std::time::Duration::from_secs_f64(retry_after.min(30.0));
-                warn!(attempt, retry_after_secs = retry_after, "Discord rate limited, waiting");
+                warn!(
+                    attempt,
+                    retry_after_secs = retry_after,
+                    "Discord rate limited, waiting"
+                );
                 tokio::time::sleep(wait).await;
                 last_err = Some(format!("rate limited (attempt {attempt})"));
                 continue;
@@ -430,9 +438,13 @@ async fn fetch_attachment_bytes(client: &Client, url: &str) -> Result<Vec<u8>> {
     }
 
     // Local file path
-    let file_path = url
-        .strip_prefix("file://")
-        .or_else(|| if url.starts_with('/') { Some(url) } else { None });
+    let file_path = url.strip_prefix("file://").or_else(|| {
+        if url.starts_with('/') {
+            Some(url)
+        } else {
+            None
+        }
+    });
     if let Some(path) = file_path {
         return tokio::fs::read(path)
             .await
@@ -484,7 +496,11 @@ fn chunk_discord_text(text: &str) -> Vec<String> {
     for line in &lines {
         let line_chars = line.chars().count();
         // Cost of appending this line (\n + line content)
-        let addition = if current.is_empty() { line_chars } else { line_chars + 1 };
+        let addition = if current.is_empty() {
+            line_chars
+        } else {
+            line_chars + 1
+        };
         // Reserve space for a closing fence if we're inside a code block
         let fence_reserve = if open_fence.is_some() { 4 } else { 0 }; // "\n```"
 
@@ -517,7 +533,10 @@ fn chunk_discord_text(text: &str) -> Vec<String> {
             for (i, part) in parts.iter().enumerate() {
                 if i > 0 || !current.is_empty() {
                     // Flush previous part as its own chunk
-                    if !current.is_empty() && current_chars + part.chars().count() + 1 + fence_reserve > DISCORD_MAX_CHARS {
+                    if !current.is_empty()
+                        && current_chars + part.chars().count() + 1 + fence_reserve
+                            > DISCORD_MAX_CHARS
+                    {
                         flush_chunk(&mut chunks, &mut current, &mut current_chars, &open_fence);
                         if let Some(ref fence) = open_fence {
                             current.push_str(fence);
@@ -641,7 +660,10 @@ mod tests {
     #[test]
     fn long_text_splits_at_lines() {
         let line = "a".repeat(100);
-        let text = (0..25).map(|_| line.as_str()).collect::<Vec<_>>().join("\n");
+        let text = (0..25)
+            .map(|_| line.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(text.chars().count() > DISCORD_MAX_CHARS);
         let chunks = chunk_discord_text(&text);
         for chunk in &chunks {

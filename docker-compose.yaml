@@ -12,7 +12,7 @@ services:
     hostname: nats
     command: ['--config', '/etc/nats/nats.conf']
     ports:
-      - "4222:4222"
+      - "127.0.0.1:4222:4222"
     expose:
       - "8222"
       - "6222"
@@ -34,7 +34,7 @@ services:
     container_name: smith-postgres
     hostname: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     shm_size: ${SMITH_PG_SHM_SIZE:-256m}
     command:
       - postgres
@@ -138,7 +138,7 @@ services:
     container_name: smith-grafana
     hostname: grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
@@ -187,16 +187,24 @@ services:
     container_name: smith-envoy
     hostname: smith-gateway
     ports:
-      - "6173:10443"
-      - "9901:9901"
+      - "127.0.0.1:6173:10443"
+      - "127.0.0.1:9901:9901"
     volumes:
       - ./infra/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./infra/envoy/agentd_descriptor.pb:/etc/envoy/agentd_descriptor.pb:ro
+      - ./infra/envoy/certs/generated/ca.crt:/etc/envoy/certs/ca.crt:ro
+      - ./infra/envoy/certs/generated/server.crt:/etc/envoy/certs/server.crt:ro
+      - ./infra/envoy/certs/generated/server.key:/etc/envoy/certs/server.key:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       otel-collector:
         condition: service_started
       nats:
         condition: service_started
       redis:
+        condition: service_started
+      mcp-index:
         condition: service_started
     networks:
       - smith
@@ -314,11 +322,12 @@ services:
     container_name: smith-mcp-index
     hostname: mcp-index
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     environment:
       - MCP_INDEX_UPSTREAMS=postgres=http://mcp-postgres:9100,users=http://mcp-users:9100,cron=http://mcp-cron:9100
       - MCP_INDEX_POLL_INTERVAL=30
       - MCP_INDEX_BASE_URL=http://localhost:9200
+      - MCP_INDEX_API_TOKEN=${MCP_INDEX_API_TOKEN:-}
     depends_on:
       mcp-postgres:
         condition: service_started
@@ -335,6 +344,34 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+
+  # ── Optional: Cloudflare Tunnel ────────────────────────────────────────
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: smith-cloudflared
+    hostname: cloudflared
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --metrics
+      - 0.0.0.0:2000
+      - run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
+    depends_on:
+      mcp-index:
+        condition: service_started
+    networks:
+      - smith
+    profiles:
+      - tunnel-cloudflare
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:2000/ready || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
 volumes:
   opa_data:

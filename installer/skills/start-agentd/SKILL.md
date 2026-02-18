@@ -1,67 +1,55 @@
 ---
-description: Start the agentd daemon and poll metrics endpoint
+description: Start agentd with committed baseline config and verify process health
 ---
-# Step 60: Start Agentd
+# Start Agentd
 
-Run: `bash scripts/bootstrap/steps/60-start-agentd.sh`
+Run:
+
+```bash
+cargo run --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd -- run \
+  --config ${AGENTD_CONFIG:-agent/agentd/config/agentd.toml} \
+  --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+```
 
 ## What It Does
 
-Starts the agentd daemon and verifies it's responding.
+This skill launches `agentd` directly from source using the valid CLI shape.
 
-1. Checks that `agentd.toml` exists (fails if step 50 wasn't run)
-2. Starts agentd using the platform-appropriate method:
-   - **Linux + systemd**: `systemctl --user start agentd`
-   - **macOS**: `launchctl load` + `launchctl start com.smith.agentd`
-   - **Fallback**: `nohup agentd run --config ...` with PID file
-3. Polls `http://localhost:9090/metrics` for up to 20 seconds
+1. Runs the explicit `agentd` bin target (multi-bin workspace-safe).
+2. Enables gRPC feature for Envoy JSON transcoding compatibility.
+3. Uses committed `agentd` config instead of insecure fallback parsing.
+4. Supplies required `--capability-digest` argument.
 
 ## Prerequisites
 
-- Step 50 (agentd config and daemon unit installed)
-- Step 40 (agentd binary on PATH)
-
-## Environment Variables
-
-None specific to this step. Metrics port (9090) is configured in step 50.
+- `agentd` build completed successfully.
+- Required infrastructure services available if runtime depends on them.
 
 ## Expected Output
 
-```
-[INFO] Starting agentd via systemctl --user...
-[ OK ] agentd started (systemd --user)
-[INFO] Waiting for agentd metrics at http://localhost:9090/metrics (max 20s)...
-[ OK ] agentd metrics endpoint responding
-```
+- Process starts without immediate panic.
+- Startup logs indicate daemon initialization and gRPC listener startup.
 
 ## Reading Results
 
-Verify agentd is running:
-```bash
-# systemd
-systemctl --user status agentd
-
-# Check metrics
-curl -s http://localhost:9090/metrics | head -5
-
-# Check logs
-journalctl --user -u agentd -f
-# or
-cat ~/.local/state/agentd/logs/agentd.log
-```
+- Keep process attached while testing bridge/gateway flows.
+- If process exits, inspect final error lines for missing config or dependency issues.
+- On macOS, ensure `.env` includes `SMITH_EXECUTOR_VM_POOL_ENABLED=true` and
+  `SMITH_EXECUTOR_VM_METHOD=gondolin` to use the Gondolin sandbox path.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "agentd config not found" | Step 50 not run | Run step 50 first |
-| systemctl start fails | Unit not installed or broken | Check `systemctl --user status agentd`, re-run step 50 |
-| Metrics timeout (20s) | agentd slow to start or crashed | Check logs: `journalctl --user -u agentd` |
-| "Plist not found" (macOS) | Step 50 not run | Run step 50 first |
-| PID file stale | Previous nohup agentd died | Remove PID file and re-run |
-| Port 9090 in use | Another service on metrics port | Edit agentd.toml to change metrics port |
+| `could not determine which binary to run` | Missing `--bin agentd` | Use full command shown above |
+| `Failed to load config` | Wrong/missing config path | Set `AGENTD_CONFIG` to a valid agentd TOML |
+| `Refusing all-zero capability digest` | Placeholder digest left at zero | Set real `AGENTD_CAPABILITY_DIGEST`, or opt in with `SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1` for local-only testing |
+| `--capability-digest` required | Missing mandatory flag | Provide 64-char hex digest (env or inline) |
+| Port already in use | Conflicting process | Stop conflicting process or change `AGENTD_GRPC_LISTEN` |
+| Cannot connect to NATS/DB | Stack not running or wrong URL | Start stack and fix endpoint vars |
+| TLS-related errors | Missing cert files for strict modes | Generate certs and verify mounts/env |
 
-## Platform Gotchas
+## Notes
 
-- **nohup fallback**: On systems without systemd/launchd, agentd runs as a background process with a PID file at `~/.local/state/agentd/agentd.pid`
-- **Metrics may be disabled**: The 20s timeout warning is non-fatal — agentd may be running fine without metrics enabled
+Use a separate terminal session so logs remain visible during installer verification.  
+For development-only fallback behavior, run the same command with `SMITH_EXECUTOR_ALLOW_INSECURE_FALLBACK=1 SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1`.

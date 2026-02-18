@@ -11,14 +11,14 @@
  * decoupled from the client.
  *
  * Env:
- *   NATS_URL            (default: nats://127.0.0.1:7222)
+ *   NATS_URL            (default: nats://127.0.0.1:4222)
  *   SESSION_RECORDER_PG (default: postgresql://smith:smith-dev@postgres:5432/smith)
  */
 
 import { connect, StringCodec } from "nats";
 import pg from "pg";
 
-const NATS_URL = process.env.NATS_URL ?? "nats://127.0.0.1:7222";
+const NATS_URL = process.env.NATS_URL ?? "nats://127.0.0.1:4222";
 const PG_URL =
   process.env.SESSION_RECORDER_PG ??
   "postgresql://smith:smith-dev@postgres:5432/smith";
@@ -39,7 +39,7 @@ async function createSession(sessionId, goal, metadata) {
         metadata?.user_id ?? null,
         metadata?.source ?? "unknown",
         metadata?.channel_id ?? null,
-        metadata?.thread_id ?? null,
+        metadata?.thread_id ?? metadata?.thread_root ?? null,
         (goal ?? "").slice(0, 200),
       ]
     );

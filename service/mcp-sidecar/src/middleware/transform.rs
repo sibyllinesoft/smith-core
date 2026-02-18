@@ -43,10 +43,7 @@ pub fn apply_output_transforms(result: &mut Value, transforms: &[TransformDef]) 
     for t in transforms {
         match t {
             TransformDef::Extract { pointer } => {
-                let extracted = result
-                    .pointer(pointer)
-                    .cloned()
-                    .unwrap_or(Value::Null);
+                let extracted = result.pointer(pointer).cloned().unwrap_or(Value::Null);
                 *result = extracted;
             }
             TransformDef::Redact {

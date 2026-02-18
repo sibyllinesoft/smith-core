@@ -26,20 +26,32 @@ The installer is an AI-guided setup agent. It detects your system, walks you thr
 npx @sibyllinesoft/smith-installer --non-interactive
 ```
 
+The installer emits non-blocking security warnings if it detects weak default
+secrets or missing private-network hints (for example Cloudflare Tunnel or
+Tailscale configuration).
+On macOS, the installer also writes Gondolin VM defaults into `.env` so
+persistent sandbox sessions are enabled out of the box.
+
 ### From source
 
 ```bash
 git clone https://github.com/sibyllinesoft/smith-core.git
 cd smith-core
 
+# Generate local mTLS certs for Envoy (idempotent)
+just generate-certs
+
 # Start infrastructure (NATS, PostgreSQL, Redis, ClickHouse, Grafana, etc.)
 just up
 
-# Build all Rust services
-just build
+# Build all Rust services (workspace + agentd)
+just build-all
 
 # Install Node.js dependencies
 just npm-install
+
+# Start secure agentd baseline config
+just run-agentd
 
 # Run the agent
 just run-agent
@@ -63,6 +75,11 @@ Smith Core connects to 10 messaging platforms through dedicated gateway binaries
 | iMessage | `just run-imessage-gateway` | Inbound webhook |
 
 Gateways requiring inbound HTTP (WhatsApp, Google Chat, iMessage) need the `webhooks` feature flag.
+
+The `smith-chat-daemon` also exposes a shared webhook ingress service (default
+`CHAT_BRIDGE_WEBHOOK_PORT=8092`) including `/webhook/github`, which validates
+`X-Hub-Signature-256` when `CHAT_BRIDGE_GITHUB_WEBHOOK_SECRET` is set and
+publishes normalized orchestration events to `smith.orch.ingest.github`.
 
 ## Architecture
 
@@ -98,7 +115,7 @@ graph TD
     style NATS fill:#1a1a2e,stroke:#0f3460,stroke-width:2px,color:#eee
 ```
 
-**NATS JetStream** is the backbone — all inter-service communication flows through typed subjects with delivery guarantees. No direct service-to-service calls.
+**NATS JetStream** is the primary async backbone for sessions, telemetry, and orchestration. Control-plane discovery and capability execution still use explicit HTTP/gRPC gateway calls.
 
 ## Key components
 
@@ -148,7 +165,7 @@ The full stack ships with:
 
 ## Infrastructure
 
-`docker compose up` starts 13 services:
+`docker compose up` starts 14 services:
 
 | Service | Purpose | Port |
 |---------|---------|------|
@@ -174,11 +191,16 @@ just build            # Build Rust workspace
 just build-agentd     # Build agentd (separate workspace)
 just build-all        # Both
 just test             # Run workspace tests
+just test-agentd      # Run agentd tests
+just test-all         # Both
 just lint             # Clippy
 just fmt              # Format
 ```
 
 See the [justfile](justfile) for all available commands.
+For release gates, use [`docs/release-readiness-checklist.md`](docs/release-readiness-checklist.md).
+For Cloudflare/Tailscale tunnel setup and e2e checks, use
+[`docs/private-network-tunnels.md`](docs/private-network-tunnels.md).
 
 ## Project structure
 
@@ -211,6 +233,11 @@ Services are configured through environment variables. Copy `.env.example` to `.
 # Core
 NATS_URL=nats://localhost:4222
 SMITH_DATABASE_URL=postgresql://smith:smith-dev@localhost:5432/smith
+AGENTD_CONFIG=agent/agentd/config/agentd.toml
+MCP_INDEX_API_TOKEN=replace-with-a-long-random-secret
+# Optional persistent VM overrides
+SMITH_EXECUTOR_VM_POOL_ENABLED=true
+SMITH_EXECUTOR_VM_METHOD=gondolin
 
 # Chat (set tokens for platforms you use)
 DISCORD_BOT_TOKEN=
@@ -219,6 +246,9 @@ SLACK_BOT_TOKEN=
 SLACK_APP_TOKEN=
 ```
 
+For non-development deployments, rotate all default passwords in `.env` and set a non-empty `MCP_INDEX_API_TOKEN`.
+When `SMITH_EXECUTOR_VM_POOL_ENABLED=true` (or `executor.vm_pool.enabled=true` in `agentd.toml`), VM execution defaults to `gondolin` on macOS and `host` on other platforms (override with `SMITH_EXECUTOR_VM_METHOD`).
+
 ## Security defaults
 
 Smith Core is designed for single-user, self-hosted deployments. Defaults are secure for that context:
@@ -226,7 +256,10 @@ Smith Core is designed for single-user, self-hosted deployments. Defaults are se
 - **DM pairing** — unknown senders on chat platforms are challenged before the agent processes their messages
 - **Sandboxed execution** — capabilities run inside agentd's isolation layers, not on the host
 - **Policy enforcement** — OPA policies govern what the agent can do
-- **mTLS gateway** — Envoy terminates TLS and provides rate limiting
+- **mTLS gateway** — Envoy terminates TLS and forwards only explicit routes
+- **Loopback-bound host ports** — infrastructure ports bind to `127.0.0.1` by default
+- **Optional API token guard** — set `MCP_INDEX_API_TOKEN` to require bearer auth for MCP index APIs
+- **Config-backed agentd startup** — `just run-agentd` uses committed config; insecure fallback is now dev-only via `just run-agentd-dev`
 - **No default policy bundles for multi-user** — that's a [paid offering](https://smithcore.dev)
 
 ## License

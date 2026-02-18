@@ -26,11 +26,15 @@ struct Cli {
     user_id: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -178,9 +182,7 @@ async fn sync_once(
             for (room_id, room) in joined {
                 if let Some(timeline) = room.timeline {
                     for event in timeline.events {
-                        if let Err(err) =
-                            handle_timeline_event(cli, gw, &room_id, &event).await
-                        {
+                        if let Err(err) = handle_timeline_event(cli, gw, &room_id, &event).await {
                             warn!(
                                 error = ?err,
                                 room_id,
@@ -221,10 +223,7 @@ async fn handle_timeline_event(
         None => return Ok(()),
     };
 
-    let text = content
-        .get("body")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let text = content.get("body").and_then(|v| v.as_str()).unwrap_or("");
     if text.is_empty() {
         return Ok(());
     }

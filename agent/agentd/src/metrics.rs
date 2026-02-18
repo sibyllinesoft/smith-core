@@ -76,7 +76,7 @@ impl MetricsExporter {
     pub async fn start_http_server(&self, port: u16) -> Result<()> {
         use tokio::net::TcpListener;
 
-        let addr = format!("0.0.0.0:{}", port);
+        let addr = format!("127.0.0.1:{}", port);
         let listener = TcpListener::bind(&addr)
             .await
             .with_context(|| format!("Failed to bind metrics server to {}", addr))?;

@@ -30,7 +30,9 @@ pub fn record_sync(status: &str) {
 }
 
 pub fn set_policies_loaded(n: usize) {
-    POLICIES_LOADED.with_label_values(&[] as &[&str]).set(n as f64);
+    POLICIES_LOADED
+        .with_label_values(&[] as &[&str])
+        .set(n as f64);
 }
 
 /// HTTP metrics and health check server

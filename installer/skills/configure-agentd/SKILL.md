@@ -1,87 +1,74 @@
 ---
-description: Create XDG directories, config file, and daemon unit for agentd
+description: Configure environment and path defaults used by agentd and bridge components
 ---
-# Step 50: Configure Agentd
+# Configure Agentd
 
-Run: `bash scripts/bootstrap/steps/50-configure-agentd.sh`
+Run:
+
+```bash
+cp -n .env.example .env || true
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  command -v gondolin >/dev/null
+  grep -q '^SMITH_EXECUTOR_VM_POOL_ENABLED=' .env || echo 'SMITH_EXECUTOR_VM_POOL_ENABLED=true' >> .env
+  grep -q '^SMITH_EXECUTOR_VM_METHOD=' .env || echo 'SMITH_EXECUTOR_VM_METHOD=gondolin' >> .env
+  grep -q '^SMITH_EXECUTOR_GONDOLIN_COMMAND=' .env || echo 'SMITH_EXECUTOR_GONDOLIN_COMMAND=gondolin' >> .env
+  grep -q '^SMITH_EXECUTOR_GONDOLIN_ARGS=' .env || echo 'SMITH_EXECUTOR_GONDOLIN_ARGS=exec,--' >> .env
+fi
+```
 
 ## What It Does
 
-Sets up agentd's configuration and daemon management.
+This skill establishes baseline environment configuration for local runs.
 
-1. Creates XDG directories for agentd:
-   - `~/.config/agentd/` — config
-   - `~/.local/share/agentd/{work,state,audit}` — data
-   - `~/.local/state/agentd/logs/` — logs
-2. Generates `agentd.toml` from template (`scripts/bootstrap/templates/agentd.toml`)
-   - Substitutes paths, UID/GID, sandbox settings
-   - Injects ActivityWatch endpoint if step 35 wrote a marker
-3. Installs a daemon unit:
-   - **Linux + systemd**: installs `~/.config/systemd/user/agentd.service`, enables it
-   - **macOS**: installs `~/Library/LaunchAgents/com.smith.agentd.plist`
-   - **Fallback**: prints nohup command for manual start
+1. Creates `.env` from `.env.example` when missing.
+2. Ensures key URLs and credentials are available for local services.
+3. Makes bridge and stack configuration explicit and reproducible.
+4. Avoids hidden machine-specific defaults.
+5. On macOS, enables Gondolin-backed persistent VM sessions by default.
 
 ## Prerequisites
 
-- Step 00 (system profile)
-- Step 40 (agentd binary installed)
-- Templates must exist: `scripts/bootstrap/templates/agentd.toml` and daemon unit template
-
-## Environment Variables
-
-| Variable | Effect |
-|----------|--------|
-| `SMITH_FORCE` | `1` to regenerate config even if it exists |
-
-## Sandbox Configuration
-
-The config is auto-tuned based on system profile:
-
-| Setting | Landlock-capable | No Landlock |
-|---------|-----------------|-------------|
-| `landlock_enabled` | `true` | `false` |
-| `strict_sandbox` | `false` (dev default) | `false` |
-| `network_isolation` | `false` (dev default) | `false` |
-
-If ActivityWatch was enabled (step 35), `allowed_destinations` includes `["http://localhost:5600"]`.
+- Repository root writable.
+- `.env.example` present.
 
 ## Expected Output
 
-```
-[INFO] Creating agentd directories...
-[INFO] Generating config: ~/.config/agentd/agentd.toml
-[ OK ] Config written to ~/.config/agentd/agentd.toml
-[INFO] Installing systemd --user unit...
-[ OK ] Systemd unit installed and enabled: ~/.config/systemd/user/agentd.service
-```
+- `.env` exists at repository root.
+- Variables for NATS/Postgres/Grafana/stack endpoints are present.
+- On macOS, Gondolin VM defaults are present:
+  - `SMITH_EXECUTOR_VM_POOL_ENABLED=true`
+  - `SMITH_EXECUTOR_VM_METHOD=gondolin`
+  - `SMITH_EXECUTOR_GONDOLIN_COMMAND=gondolin`
+  - `SMITH_EXECUTOR_GONDOLIN_ARGS=exec,--`
 
 ## Reading Results
 
-Check the generated config:
-```bash
-cat ~/.config/agentd/agentd.toml
-```
+Review and customize at minimum:
 
-Check the daemon unit:
-```bash
-# Linux
-systemctl --user status agentd
+- `POSTGRES_PASSWORD`
+- `GRAFANA_ADMIN_PASSWORD`
+- `MCP_INDEX_API_TOKEN`
+- `AGENTD_CONFIG`
+- `SMITH_NATS_URL`
+- `SMITH_DATABASE_URL`
+- `AGENTD_URL`
+- `SMITH_EXECUTOR_VM_POOL_ENABLED` (set to `true` on macOS)
+- `SMITH_EXECUTOR_VM_METHOD` (set to `gondolin` on macOS)
 
-# macOS
-launchctl list com.smith.agentd
-```
+If this system is not isolated to a private network, set up a private access path
+(for example Cloudflare Tunnel or Tailscale) before exposing services.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "Config template not found" | Missing template file | Ensure repo is fully cloned, check `scripts/bootstrap/templates/` |
-| "Unit template not found" | Missing service/plist template | Same as above |
-| systemctl daemon-reload fails | systemd --user not running | Enable lingering: `loginctl enable-linger $USER` |
-| Config exists, not overwritten | Idempotency — existing config preserved | Use `SMITH_FORCE=1` to regenerate |
+| `.env` not created | Permission/path issue | Create file manually and retry |
+| Service auth failures | Password mismatch with compose | Align `.env` values and restart stack |
+| Bridge cannot reach agentd | Bad `AGENTD_URL` | Set reachable URL and rerun |
+| Unexpected defaults used | Variable unset | Populate `.env` explicitly |
+| `gondolin` not found on macOS | Gondolin missing from PATH | Install Gondolin and retry |
 
-## Platform Gotchas
+## Notes
 
-- **macOS**: No systemd — uses launchd plist instead
-- **WSL without systemd**: Falls back to nohup documentation (manual start)
-- **NixOS**: systemd --user works but paths may differ; verify XDG env vars
+There is no generated `agentd.toml` workflow in the current installer path.

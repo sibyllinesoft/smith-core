@@ -1,4 +1,9 @@
-use std::{collections::HashMap, sync::Arc, sync::atomic::{AtomicU32, Ordering}, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::atomic::{AtomicU32, Ordering},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     adapter::OutgoingMessage,
@@ -6,7 +11,9 @@ use crate::{
     bridge::ChatBridge,
     config::ChatBridgeConfig,
     identity::IdentityClaims,
-    message::{Attachment, ChannelAddress, ChatPlatform, MessageContent, Participant, ParticipantRole},
+    message::{
+        Attachment, ChannelAddress, ChatPlatform, MessageContent, Participant, ParticipantRole,
+    },
     pairing_store::{DmPolicy, PairingStore},
     session_key::{SessionKey, SessionScope},
 };
@@ -26,8 +33,8 @@ use uuid::Uuid;
 #[derive(Debug, Parser, Clone)]
 #[command(author, version, about = "Smith chat bridge ingestion daemon", long_about = None)]
 pub struct Cli {
-    /// NATS server URL (e.g. nats://127.0.0.1:7222)
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    /// NATS server URL (e.g. nats://127.0.0.1:4222)
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to subscribe to for Mattermost bridge events
@@ -62,6 +69,10 @@ pub struct Cli {
     #[arg(long, env = "CHAT_BRIDGE_SESSION_TIMEOUT_SECS", default_value_t = 10)]
     session_timeout_secs: u64,
 
+    /// Number of prior thread messages to include when starting a new session
+    #[arg(long, env = "CHAT_BRIDGE_THREAD_HISTORY_LIMIT", default_value_t = 20)]
+    thread_history_limit: i64,
+
     /// managerd websocket endpoint used for streaming agent updates
     #[arg(
         long,
@@ -79,7 +90,7 @@ pub struct Cli {
     chat_bridge_adapter_id: String,
 
     /// DM policy: pairing, allowlist, or open
-    #[arg(long, env = "CHAT_BRIDGE_DM_POLICY", default_value = "open")]
+    #[arg(long, env = "CHAT_BRIDGE_DM_POLICY", default_value = "pairing")]
     dm_policy: String,
 
     /// TTL (seconds) for unredeemed pairing codes
@@ -98,13 +109,29 @@ pub struct Cli {
     #[arg(long, env = "CHAT_BRIDGE_IDENTITY_SECRET")]
     identity_secret: Option<String>,
 
-    /// Port to serve webhook ingestion endpoints (0 = disabled)
-    #[arg(long, env = "CHAT_BRIDGE_WEBHOOK_PORT", default_value_t = 0)]
+    /// Port to serve webhook ingestion endpoints
+    #[arg(long, env = "CHAT_BRIDGE_WEBHOOK_PORT", default_value_t = 8092)]
     webhook_port: u16,
 
     /// WhatsApp webhook verify token (for GET verification handshake)
     #[arg(long, env = "CHAT_BRIDGE_WHATSAPP_VERIFY_TOKEN")]
     whatsapp_verify_token: Option<String>,
+
+    /// GitHub webhook secret for validating X-Hub-Signature-256
+    #[arg(long, env = "CHAT_BRIDGE_GITHUB_WEBHOOK_SECRET")]
+    github_webhook_secret: Option<String>,
+
+    /// NATS subject for normalized GitHub webhook orchestration events
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_GITHUB_INGEST_SUBJECT",
+        default_value = "smith.orch.ingest.github"
+    )]
+    github_ingest_subject: String,
+
+    /// Bearer token for admin API endpoints (empty = no auth)
+    #[arg(long, env = "CHAT_BRIDGE_ADMIN_TOKEN")]
+    admin_token: Option<String>,
 
     /// NATS subject for session start requests (must match the agent bridge)
     #[arg(
@@ -161,6 +188,8 @@ impl SessionWatchManager {
             return;
         };
         let mut tasks = self.tasks.lock().await;
+        // Drop completed watcher handles to avoid stale entries and map growth.
+        tasks.retain(|_, handle| !handle.is_finished());
         if tasks.contains_key(&session_id) {
             return;
         }
@@ -236,12 +265,16 @@ pub async fn run(cli: Cli) -> Result<()> {
         active_sessions: Arc::new(AtomicU32::new(0)),
     });
 
-    // Optionally spawn webhook ingestion server
+    // Spawn webhook ingestion server.
     #[cfg(feature = "webhooks")]
-    if cli.webhook_port > 0 {
+    {
         let webhook_state = Arc::new(crate::webhook::WebhookState {
             nats: client.clone(),
             whatsapp_verify_token: cli.whatsapp_verify_token.clone(),
+            github_webhook_secret: cli.github_webhook_secret.clone(),
+            github_ingest_subject: cli.github_ingest_subject.clone(),
+            pairing_store: Arc::clone(&state.pairing_store),
+            admin_token: cli.admin_token.clone(),
         });
         let app = crate::webhook::router(webhook_state);
         let addr: std::net::SocketAddr = ([0, 0, 0, 0], cli.webhook_port).into();
@@ -444,11 +477,7 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
 
     if is_new_session {
         // Enforce per-agent concurrent session limit
-        let max = fetch_max_concurrent_sessions(
-            &state.database_url,
-            &state.agent_id,
-        )
-        .await;
+        let max = fetch_max_concurrent_sessions(&state.database_url, &state.agent_id).await;
         let active = state.active_sessions.load(Ordering::Relaxed);
         if active >= max {
             info!(
@@ -493,11 +522,7 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
         // Existing session appears dead — recreate and retry
         warn!(error = ?e, session_id = ?record.session_id, "Session appears dead, creating new session");
 
-        let max = fetch_max_concurrent_sessions(
-            &state.database_url,
-            &state.agent_id,
-        )
-        .await;
+        let max = fetch_max_concurrent_sessions(&state.database_url, &state.agent_id).await;
         let active = state.active_sessions.load(Ordering::Relaxed);
         if active >= max {
             send_reply(
@@ -746,10 +771,7 @@ async fn fetch_max_concurrent_sessions(database_url: &str, agent_id: &str) -> u3
         });
 
         let row = client
-            .query_opt(
-                "SELECT config FROM agents WHERE id = $1",
-                &[&agent_id],
-            )
+            .query_opt("SELECT config FROM agents WHERE id = $1", &[&agent_id])
             .await?;
 
         if let Some(row) = row {
@@ -786,6 +808,15 @@ async fn start_new_session(
     state: &AppState,
     envelope: &BridgeMessageEnvelope,
 ) -> Result<SessionContext> {
+    let thread_history = fetch_thread_history(
+        &state.database_url,
+        &envelope.platform,
+        &envelope.channel_id,
+        &envelope.thread_root,
+        state.config.thread_history_limit,
+    )
+    .await;
+
     let attachments: Vec<Value> = envelope
         .attachments
         .iter()
@@ -805,6 +836,7 @@ async fn start_new_session(
         "team_name": envelope.team_name,
         "channel_id": envelope.channel_id,
         "channel_name": envelope.channel_name,
+        "thread_id": envelope.thread_root,
         "thread_root": envelope.thread_root,
         "post_id": envelope.post_id,
         "sender_id": envelope.sender.id,
@@ -818,16 +850,14 @@ async fn start_new_session(
         goal: envelope.message.clone(),
         metadata: Some(metadata),
         immediate: true,
-        thread_history: Vec::new(), // History is query-driven; agent uses postgres__query
+        thread_history,
     };
 
     let bytes = serde_json::to_vec(&payload)?;
     let subject = state.config.session_start_subject.clone();
     let response = timeout(
         state.session_timeout(),
-        state
-            .nats
-            .request(subject, bytes.into()),
+        state.nats.request(subject, bytes.into()),
     )
     .await
     .context("session start request timed out")??;
@@ -885,10 +915,7 @@ async fn publish_user_message(
 
         let mut meta = claims.to_metadata();
         if let Ok(jwt) = claims.to_jwt(secret) {
-            meta.insert(
-                "x-oc-identity-token".to_string(),
-                Value::String(jwt),
-            );
+            meta.insert("x-oc-identity-token".to_string(), Value::String(jwt));
         }
         Some(meta)
     } else {
@@ -899,6 +926,7 @@ async fn publish_user_message(
         "source": record.platform,
         "team_id": envelope.team_id,
         "channel_id": envelope.channel_id,
+        "thread_id": envelope.thread_root,
         "thread_root": envelope.thread_root,
         "post_id": envelope.post_id,
         "sender_id": envelope.sender.id,
@@ -924,13 +952,17 @@ async fn publish_user_message(
     // Pi-bridge sends an immediate ack; if nobody is listening the request times out.
     match timeout(
         Duration::from_secs(5),
-        state.nats.request(subject.clone(), payload.to_string().into()),
+        state
+            .nats
+            .request(subject.clone(), payload.to_string().into()),
     )
     .await
     {
         Ok(Ok(_)) => Ok(()),
         Ok(Err(e)) => Err(anyhow::anyhow!("steering request failed: {e}")),
-        Err(_) => Err(anyhow::anyhow!("steering request timed out — session is dead")),
+        Err(_) => Err(anyhow::anyhow!(
+            "steering request timed out — session is dead"
+        )),
     }
 }
 
@@ -989,6 +1021,113 @@ async fn session_watcher_task(state: Arc<AppState>, record: ThreadRecord) -> Res
     }
 
     Ok(())
+}
+
+async fn fetch_thread_history(
+    database_url: &str,
+    source: &str,
+    channel_id: &str,
+    thread_id: &str,
+    limit: i64,
+) -> Vec<HistoryMessage> {
+    if limit <= 0 {
+        return Vec::new();
+    }
+
+    let result = async {
+        let (client, connection) =
+            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::warn!(error = ?e, "Postgres connection error");
+            }
+        });
+
+        let mut history =
+            query_thread_history(&client, source, channel_id, Some(thread_id), limit).await?;
+
+        // Backward compatibility: older session rows may have NULL thread_id.
+        if history.is_empty() && !thread_id.is_empty() {
+            history = query_thread_history(&client, source, channel_id, None, limit).await?;
+        }
+
+        Ok::<Vec<HistoryMessage>, anyhow::Error>(history)
+    }
+    .await;
+
+    match result {
+        Ok(history) => history,
+        Err(err) => {
+            warn!(
+                error = ?err,
+                source,
+                channel_id,
+                thread_id,
+                "Failed to load thread history, continuing without bootstrap history"
+            );
+            Vec::new()
+        }
+    }
+}
+
+async fn query_thread_history(
+    client: &tokio_postgres::Client,
+    source: &str,
+    channel_id: &str,
+    thread_id: Option<&str>,
+    limit: i64,
+) -> Result<Vec<HistoryMessage>> {
+    let rows = if let Some(thread_id) = thread_id {
+        client
+            .query(
+                "SELECT role, content, username, created_at::text AS created_at FROM (
+                    SELECT cm.role, cm.content, cm.username, cm.created_at
+                    FROM chat_messages cm
+                    JOIN chat_sessions cs ON cm.session_id = cs.id
+                    WHERE cs.source = $1
+                      AND cs.channel_id = $2
+                      AND cs.thread_id = $3
+                      AND cm.role IN ('user', 'assistant')
+                      AND cm.content <> ''
+                    ORDER BY cm.created_at DESC
+                    LIMIT $4
+                 ) recent
+                 ORDER BY created_at ASC",
+                &[&source, &channel_id, &thread_id, &limit],
+            )
+            .await?
+    } else {
+        client
+            .query(
+                "SELECT role, content, username, created_at::text AS created_at FROM (
+                    SELECT cm.role, cm.content, cm.username, cm.created_at
+                    FROM chat_messages cm
+                    JOIN chat_sessions cs ON cm.session_id = cs.id
+                    WHERE cs.source = $1
+                      AND cs.channel_id = $2
+                      AND cs.thread_id IS NULL
+                      AND cm.role IN ('user', 'assistant')
+                      AND cm.content <> ''
+                    ORDER BY cm.created_at DESC
+                    LIMIT $3
+                 ) recent
+                 ORDER BY created_at ASC",
+                &[&source, &channel_id, &limit],
+            )
+            .await?
+    };
+
+    let history = rows
+        .into_iter()
+        .map(|row| HistoryMessage {
+            role: row.get::<_, String>("role"),
+            content: row.get::<_, String>("content"),
+            username: row.get::<_, Option<String>>("username"),
+            timestamp: row.get::<_, Option<String>>("created_at"),
+        })
+        .collect::<Vec<_>>();
+
+    Ok(history)
 }
 
 /// Watch for agent responses via NATS subscription (used by pi-bridge and
@@ -1051,11 +1190,23 @@ async fn nats_response_watcher(
                     .filter_map(|a| {
                         Some(Attachment {
                             id: a.get("id").and_then(|v| v.as_str()).map(String::from),
-                            title: a.get("title").and_then(|v| v.as_str()).map(String::from)
-                                .or_else(|| a.get("filename").and_then(|v| v.as_str()).map(String::from)),
+                            title: a
+                                .get("title")
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                                .or_else(|| {
+                                    a.get("filename").and_then(|v| v.as_str()).map(String::from)
+                                }),
                             url: a.get("url").and_then(|v| v.as_str())?.to_string(),
-                            mime_type: a.get("mime_type").and_then(|v| v.as_str()).map(String::from)
-                                .or_else(|| a.get("content_type").and_then(|v| v.as_str()).map(String::from)),
+                            mime_type: a
+                                .get("mime_type")
+                                .and_then(|v| v.as_str())
+                                .map(String::from)
+                                .or_else(|| {
+                                    a.get("content_type")
+                                        .and_then(|v| v.as_str())
+                                        .map(String::from)
+                                }),
                             size_bytes: a.get("size_bytes").and_then(|v| v.as_u64()),
                         })
                     })
@@ -1070,7 +1221,9 @@ async fn nats_response_watcher(
         match msg_type {
             "message" => {
                 if !content.is_empty() || !attachments.is_empty() {
-                    if let Err(err) = handle_session_log(&state, &record, content, &attachments).await {
+                    if let Err(err) =
+                        handle_session_log(&state, &record, content, &attachments).await
+                    {
                         warn!(
                             error = ?err,
                             session_id,

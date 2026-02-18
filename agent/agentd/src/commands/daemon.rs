@@ -2538,7 +2538,8 @@ impl DaemonCommand {
                 std::path::PathBuf::from("/bin"),
                 std::path::PathBuf::from("/etc"),
             ];
-            let default_paths_rw = vec![std::path::PathBuf::from("/home/nathan/Projects")];
+            let default_paths_rw =
+                vec![std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/tmp"))];
             let grpc_adapter = Arc::new(GrpcAdapter::with_sandbox_defaults(
                 grpc_addr,
                 default_paths_ro,
@@ -2599,6 +2600,16 @@ fn validate_capability_digest(capability_digest: String) -> Result<String> {
             capability_digest
         ));
     }
+
+    let allow_zero_digest = std::env::var("SMITH_ALLOW_ZERO_CAPABILITY_DIGEST")
+        .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
+    if !allow_zero_digest && capability_digest.chars().all(|c| c == '0') {
+        return Err(anyhow::anyhow!(
+            "Refusing all-zero capability digest. Set a real digest or explicitly opt in with SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1 for local development."
+        ));
+    }
+
     info!("Capability digest validated: {}", capability_digest);
     Ok(capability_digest)
 }
@@ -2900,6 +2911,17 @@ mod tests {
         let invalid_digest = format!("{}  {}", "a".repeat(31), "b".repeat(31));
         let result = validate_capability_digest(invalid_digest);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_capability_digest_all_zero_rejected() {
+        std::env::remove_var("SMITH_ALLOW_ZERO_CAPABILITY_DIGEST");
+        let result = validate_capability_digest("0".repeat(64));
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Refusing all-zero capability digest"));
     }
 
     #[test]

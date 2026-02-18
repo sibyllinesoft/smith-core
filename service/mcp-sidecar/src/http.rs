@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -14,6 +14,39 @@ use crate::middleware::transform::{apply_input_transforms, apply_output_transfor
 use crate::AppState;
 
 type SharedState = Arc<AppState>;
+
+fn extract_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(authz) = headers.get(header::AUTHORIZATION) {
+        if let Ok(authz) = authz.to_str() {
+            if let Some(rest) = authz.strip_prefix("Bearer ") {
+                return Some(rest.trim().to_string());
+            }
+            if let Some(rest) = authz.strip_prefix("bearer ") {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+
+    headers
+        .get("x-smith-token")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim().to_string())
+}
+
+fn require_api_token(state: &SharedState, headers: &HeaderMap) -> Result<(), AppError> {
+    let Some(expected) = state.api_token.as_ref() else {
+        return Ok(());
+    };
+
+    let provided = extract_token(headers).unwrap_or_default();
+    if provided == *expected {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized(
+            "missing or invalid API token".to_string(),
+        ))
+    }
+}
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -35,7 +68,12 @@ async fn health(State(state): State<SharedState>) -> Json<Value> {
     }))
 }
 
-async fn list_tools(State(state): State<SharedState>) -> Json<Value> {
+async fn list_tools(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_api_token(&state, &headers)?;
+
     let client = state.client.read().await;
     let mw = state.middleware.read().await;
 
@@ -43,24 +81,22 @@ async fn list_tools(State(state): State<SharedState>) -> Json<Value> {
         Some(mw) => client
             .tools
             .iter()
-            .filter(|t| {
-                !mw.tools
-                    .get(&t.name)
-                    .map(|tm| tm.hidden)
-                    .unwrap_or(false)
-            })
+            .filter(|t| !mw.tools.get(&t.name).map(|tm| tm.hidden).unwrap_or(false))
             .collect(),
         None => client.tools.iter().collect(),
     };
 
-    Json(json!(tools))
+    Ok(Json(json!(tools)))
 }
 
 async fn call_tool(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(name): Path<String>,
     Json(body): Json<Value>,
 ) -> Result<Json<Value>, AppError> {
+    require_api_token(&state, &headers)?;
+
     let client = state.client.read().await;
 
     // Check if tool exists
@@ -110,7 +146,9 @@ async fn call_tool(
     let mut result = match client.call_tool(&name, arguments).await {
         Ok(result) => result,
         Err(e) => {
-            if e.downcast_ref::<crate::mcp_client::JsonRpcError>().is_some() {
+            if e.downcast_ref::<crate::mcp_client::JsonRpcError>()
+                .is_some()
+            {
                 return Err(AppError::ToolError(e.to_string()));
             } else {
                 return Err(AppError::McpServerError(e.to_string()));
@@ -136,7 +174,12 @@ async fn call_tool(
     Ok(Json(result))
 }
 
-async fn list_resources(State(state): State<SharedState>) -> Result<Json<Value>, AppError> {
+async fn list_resources(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_api_token(&state, &headers)?;
+
     let client = state.client.read().await;
     match client.list_resources().await {
         Ok(resources) => Ok(Json(json!(resources))),
@@ -146,8 +189,11 @@ async fn list_resources(State(state): State<SharedState>) -> Result<Json<Value>,
 
 async fn read_resource(
     State(state): State<SharedState>,
+    headers: HeaderMap,
     Path(uri): Path<String>,
 ) -> Result<Json<Value>, AppError> {
+    require_api_token(&state, &headers)?;
+
     let client = state.client.read().await;
     match client.read_resource(&uri).await {
         Ok(content) => Ok(Json(content)),
@@ -157,7 +203,12 @@ async fn read_resource(
 
 // ── POST /reload ─────────────────────────────────────────────────────
 
-async fn reload(State(state): State<SharedState>) -> Result<Json<Value>, AppError> {
+async fn reload(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_api_token(&state, &headers)?;
+
     tracing::info!("reload requested — shutting down current MCP server");
 
     // Shut down the old client
@@ -199,6 +250,7 @@ async fn reload(State(state): State<SharedState>) -> Result<Json<Value>, AppErro
 // ── Error handling ──────────────────────────────────────────────────────
 
 enum AppError {
+    Unauthorized(String),
     NotFound(String),
     ToolError(String),
     Filtered(String),
@@ -209,6 +261,7 @@ enum AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, message) = match self {
+            Self::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg),
             Self::NotFound(msg) => (StatusCode::NOT_FOUND, msg),
             Self::ToolError(msg) => (StatusCode::UNPROCESSABLE_ENTITY, msg),
             Self::Filtered(msg) => (StatusCode::FORBIDDEN, msg),

@@ -6,7 +6,7 @@ use agentd::vm::{MicroVmManager, VmPoolRuntimeConfig};
 use agentd::{ExecutionLimits, Runner};
 use anyhow::Result;
 use serde_json::json;
-use smith_config::executor::VmPoolConfig;
+use smith_config::executor::{GondolinAdapterConfig, VmMethod, VmPoolConfig};
 use tempfile::TempDir;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
@@ -24,6 +24,7 @@ fn default_limits() -> ExecutionLimits {
 fn test_vm_pool_config(volume_root: PathBuf) -> VmPoolConfig {
     VmPoolConfig {
         enabled: true,
+        method: VmMethod::Host,
         volume_root,
         nix_profile: None,
         shell: PathBuf::from("/usr/bin/env"),
@@ -35,6 +36,7 @@ fn test_vm_pool_config(volume_root: PathBuf) -> VmPoolConfig {
         backup_after_seconds: None,
         backup_destination: None,
         bootstrap_command: None,
+        gondolin: GondolinAdapterConfig::default(),
     }
 }
 

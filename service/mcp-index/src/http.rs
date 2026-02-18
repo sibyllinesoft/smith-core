@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::Html;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -12,6 +12,43 @@ use crate::oauth;
 use crate::poller::IndexState;
 
 type AppState = Arc<IndexState>;
+
+fn extract_token(headers: &HeaderMap) -> Option<String> {
+    if let Some(authz) = headers.get(header::AUTHORIZATION) {
+        if let Ok(authz) = authz.to_str() {
+            if let Some(rest) = authz.strip_prefix("Bearer ") {
+                return Some(rest.trim().to_string());
+            }
+            if let Some(rest) = authz.strip_prefix("bearer ") {
+                return Some(rest.trim().to_string());
+            }
+        }
+    }
+
+    headers
+        .get("x-smith-token")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.trim().to_string())
+}
+
+fn require_api_token(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, Json<Value>)> {
+    let Some(expected) = state.api_token.as_ref() else {
+        return Ok(());
+    };
+
+    let provided = extract_token(headers).unwrap_or_default();
+    if provided == *expected {
+        Ok(())
+    } else {
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "missing or invalid API token" })),
+        ))
+    }
+}
 
 pub fn router(state: Arc<IndexState>) -> Router {
     Router::new()
@@ -38,7 +75,11 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     let servers = state.servers.read().await;
     let total = servers.len();
     let healthy = servers.iter().filter(|s| s.healthy).count();
-    let tools_total: usize = servers.iter().filter(|s| s.healthy).map(|s| s.tools_count).sum();
+    let tools_total: usize = servers
+        .iter()
+        .filter(|s| s.healthy)
+        .map(|s| s.tools_count)
+        .sum();
 
     Json(json!({
         "status": "ok",
@@ -51,21 +92,29 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
 
 // ── GET /api/servers ────────────────────────────────────────────────────
 
-async fn servers(State(state): State<AppState>) -> Json<Value> {
+async fn servers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_api_token(&state, &headers)?;
     let servers = state.servers.read().await;
-    Json(json!(*servers))
+    Ok(Json(json!(*servers)))
 }
 
 // ── GET /api/tools ──────────────────────────────────────────────────────
 
-async fn tools(State(state): State<AppState>) -> Json<Value> {
+async fn tools(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_api_token(&state, &headers)?;
     let servers = state.servers.read().await;
     let all_tools: Vec<_> = servers
         .iter()
         .filter(|s| s.healthy)
         .flat_map(|s| s.tools.iter().cloned())
         .collect();
-    Json(json!(all_tools))
+    Ok(Json(json!(all_tools)))
 }
 
 // ── GET /api/tools/search?q=&server= ────────────────────────────────────
@@ -78,8 +127,11 @@ struct SearchQuery {
 
 async fn tools_search(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<SearchQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_api_token(&state, &headers)?;
+
     let q = match &params.q {
         Some(q) if !q.is_empty() => q.to_lowercase(),
         _ => {
@@ -124,17 +176,23 @@ struct ToolCallRequest {
 
 async fn tools_call(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<ToolCallRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_api_token(&state, &headers)?;
+
     let servers = state.servers.read().await;
 
     // Find the server
-    let server = servers.iter().find(|s| s.name == req.server).ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("server '{}' not found", req.server) })),
-        )
-    })?;
+    let server = servers
+        .iter()
+        .find(|s| s.name == req.server)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("server '{}' not found", req.server) })),
+            )
+        })?;
 
     if !server.healthy {
         return Err((
@@ -147,7 +205,9 @@ async fn tools_call(
     if !server.tools.iter().any(|t| t.name == req.tool) {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(json!({ "error": format!("tool '{}' not found on server '{}'", req.tool, req.server) })),
+            Json(
+                json!({ "error": format!("tool '{}' not found on server '{}'", req.tool, req.server) }),
+            ),
         ));
     }
 
@@ -169,9 +229,10 @@ async fn tools_call(
         })?;
 
     let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or_else(|e| {
-        json!({ "error": format!("failed to parse upstream response: {e}") })
-    });
+    let body: Value = resp
+        .json()
+        .await
+        .unwrap_or_else(|e| json!({ "error": format!("failed to parse upstream response: {e}") }));
 
     if status.is_success() {
         Ok(Json(body))
@@ -192,8 +253,11 @@ struct AuthStartQuery {
 
 async fn auth_start(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Query(params): Query<AuthStartQuery>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_api_token(&state, &headers)?;
+
     let provider = state.oauth.providers.get(&params.server).ok_or_else(|| {
         (
             StatusCode::NOT_FOUND,
@@ -202,7 +266,10 @@ async fn auth_start(
     })?;
 
     let state_token = uuid::Uuid::new_v4().to_string();
-    state.oauth.insert_pending(state_token.clone(), params.server.clone()).await;
+    state
+        .oauth
+        .insert_pending(state_token.clone(), params.server.clone())
+        .await;
 
     let redirect_uri = format!("{}/api/auth/callback", state.base_url);
     let url = oauth::build_auth_url(provider, &redirect_uri, &state_token);
@@ -236,10 +303,11 @@ async fn auth_callback(
     let redirect_uri = format!("{}/api/auth/callback", state.base_url);
 
     // Exchange code for tokens
-    let refresh_token = match oauth::exchange_code(&state.client, &provider, &params.code, &redirect_uri).await {
-        Ok(t) => t,
-        Err(e) => return auth_error_page(&format!("Token exchange failed: {e}")),
-    };
+    let refresh_token =
+        match oauth::exchange_code(&state.client, &provider, &params.code, &redirect_uri).await {
+            Ok(t) => t,
+            Err(e) => return auth_error_page(&format!("Token exchange failed: {e}")),
+        };
 
     // Write credentials to shared volume
     if let Err(e) = oauth::write_credentials(&provider, &refresh_token).await {

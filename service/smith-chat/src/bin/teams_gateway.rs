@@ -17,7 +17,11 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Microsoft Teams Gateway → NATS bridge for Smith")]
+#[command(
+    author,
+    version,
+    about = "Microsoft Teams Gateway → NATS bridge for Smith"
+)]
 struct Cli {
     /// Azure AD tenant ID
     #[arg(long, env = "TEAMS_TENANT_ID")]
@@ -40,11 +44,15 @@ struct Cli {
     channel_id: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -138,11 +146,7 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn get_access_token(
-    cli: &Cli,
-    http: &reqwest::Client,
-    state: &TeamsState,
-) -> Result<String> {
+async fn get_access_token(cli: &Cli, http: &reqwest::Client, state: &TeamsState) -> Result<String> {
     {
         let guard = state.token_cache.read().await;
         if let Some(token) = guard.as_ref() {
@@ -228,8 +232,7 @@ async fn poll_messages(
     // Handle pagination
     if let Some(next_link) = page.next_link {
         // More pages to fetch — recursively get them
-        if let Ok(more_delta) =
-            Box::pin(poll_messages_url(cli, http, gw, state, &next_link)).await
+        if let Ok(more_delta) = Box::pin(poll_messages_url(cli, http, gw, state, &next_link)).await
         {
             new_delta = more_delta.or(new_delta);
         }

@@ -18,7 +18,11 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "WhatsApp Cloud API Gateway → NATS bridge for Smith")]
+#[command(
+    author,
+    version,
+    about = "WhatsApp Cloud API Gateway → NATS bridge for Smith"
+)]
 struct Cli {
     /// Port to listen on for WhatsApp webhook events
     #[arg(long, env = "WHATSAPP_WEBHOOK_PORT", default_value_t = 8091)]
@@ -29,11 +33,15 @@ struct Cli {
     verify_token: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -132,9 +140,7 @@ async fn handle_webhook(
             };
 
             // Extract contacts for display name lookup
-            let contacts = value
-                .get("contacts")
-                .and_then(|v| v.as_array());
+            let contacts = value.get("contacts").and_then(|v| v.as_array());
 
             let messages = match value.get("messages").and_then(|v| v.as_array()) {
                 Some(m) => m,
@@ -182,9 +188,8 @@ async fn handle_message(
     // Look up display name from contacts
     let display_name = contacts
         .and_then(|cs| {
-            cs.iter().find(|c| {
-                c.get("wa_id").and_then(|v| v.as_str()) == Some(from)
-            })
+            cs.iter()
+                .find(|c| c.get("wa_id").and_then(|v| v.as_str()) == Some(from))
         })
         .and_then(|c| c.get("profile"))
         .and_then(|p| p.get("name"))

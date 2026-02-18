@@ -168,7 +168,9 @@ impl McpClient {
         );
 
         // Send initialized notification (no id, no response expected)
-        client.send_notification("notifications/initialized", None).await?;
+        client
+            .send_notification("notifications/initialized", None)
+            .await?;
 
         // Discover tools
         let tools = client.list_tools().await.unwrap_or_else(|e| {

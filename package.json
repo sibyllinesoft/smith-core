@@ -1,8 +1,13 @@
 {
   "name": "smith-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Open-source AI agent platform with secure execution and multi-platform chat",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sibyllinesoft/smith-core.git"
+  },
   "workspaces": [
     "agent/pi-bridge",
     "installer",

@@ -47,6 +47,7 @@ pub struct IndexState {
     pub client: reqwest::Client,
     pub oauth: Arc<OAuthState>,
     pub base_url: String,
+    pub api_token: Option<String>,
 }
 
 // ── Upstream health response ────────────────────────────────────────────
@@ -136,11 +137,7 @@ async fn poll_one(client: &reqwest::Client, upstream: &Upstream) -> ServerEntry 
             }
         },
         Ok(resp) => {
-            return make_error_entry(
-                upstream,
-                &now,
-                format!("health returned {}", resp.status()),
-            );
+            return make_error_entry(upstream, &now, format!("health returned {}", resp.status()));
         }
         Err(e) => {
             return make_error_entry(upstream, &now, format!("health fetch error: {e}"));
@@ -157,11 +154,7 @@ async fn poll_one(client: &reqwest::Client, upstream: &Upstream) -> ServerEntry 
             }
         },
         Ok(resp) => {
-            return make_error_entry(
-                upstream,
-                &now,
-                format!("tools returned {}", resp.status()),
-            );
+            return make_error_entry(upstream, &now, format!("tools returned {}", resp.status()));
         }
         Err(e) => {
             return make_error_entry(upstream, &now, format!("tools fetch error: {e}"));

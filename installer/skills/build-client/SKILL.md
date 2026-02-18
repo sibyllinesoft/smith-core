@@ -1,62 +1,49 @@
 ---
-description: Build the React SPA web client
+description: Build Node workspaces required by installer and bridge services
 ---
-# Step 25: Build Client
+# Build Client
 
-Run: `bash scripts/bootstrap/steps/25-build-client.sh`
+Run:
+
+```bash
+npm install
+npm run build --workspaces --if-present
+```
 
 ## What It Does
 
-Builds the Smith web client (React + TypeScript SPA) into `client/dist/`.
+This skill builds TypeScript/Node workspace packages used by Smith Core.
 
-1. Checks if `client/dist/index.html` already exists (skip if so)
-2. Installs npm dependencies if `node_modules/` is missing
-3. Runs the build (`bun run build` or `npm run build`)
-4. Verifies `client/dist/index.html` was produced
+1. Installs workspace dependencies.
+2. Builds workspaces that expose a `build` script.
+3. Verifies installer and bridge artifacts compile.
+4. Ensures runtime JS entrypoints exist before launch.
 
 ## Prerequisites
 
-- Step 00 must have run (needs system profile for bun/npm detection)
-- `bun` or `npm` must be available
-- `client/` directory must exist in the repo
-
-## Environment Variables
-
-None specific to this step. Uses system profile to detect bun vs npm.
+- Node.js 22+.
+- npm available.
+- Internet access for package installation.
 
 ## Expected Output
 
-If already built:
-```
-[ OK ] Client build exists at client/dist/index.html
-```
-
-If building:
-```
-[INFO] Building client SPA...
-[INFO] Installing dependencies with bun...
-[INFO] Building with bun...
-[ OK ] Client built successfully
-```
+- `npm install` completes without fatal errors.
+- Build runs for `@smith/pi-bridge` and `@sibyllinesoft/smith-installer`.
 
 ## Reading Results
 
-Check that the dist output exists:
-```bash
-ls client/dist/index.html
-```
+- TypeScript compile failures indicate code/config drift.
+- Missing workspace build output blocks installer CLI execution.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| "No JS package manager available" | Neither bun nor npm installed | Install Node.js 20+ or bun |
-| "Build completed but index.html not found" | Build script failed or output path changed | Check `client/package.json` for the build script and output config |
-| npm peer dependency errors | Conflicting dependency versions | Use `--legacy-peer-deps` (the script does this automatically for npm) |
-| Out of memory during build | Large TypeScript project | Set `NODE_OPTIONS=--max-old-space-size=4096` |
+| npm install fails | Network/auth/registry issues | Fix npm connectivity and retry |
+| TypeScript errors in build | Source mismatch | Fix TS errors before bootstrap |
+| Wrong Node version | Node < 22 | Upgrade Node runtime |
+| Workspace not built | Missing `build` script | Add or correct workspace script |
 
-## Platform Gotchas
+## Notes
 
-- **npm vs bun**: The script prefers bun when available (faster installs and builds)
-- **npm**: Automatically uses `--legacy-peer-deps` to avoid peer dependency conflicts
-- **NixOS**: Ensure you're in `nix develop` for node/bun availability
+Use this before running installer commands that depend on `dist/` outputs.

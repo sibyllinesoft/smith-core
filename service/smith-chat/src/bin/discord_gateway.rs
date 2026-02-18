@@ -26,11 +26,15 @@ struct Cli {
     bot_token: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -91,8 +95,8 @@ async fn run_gateway(
 
     // Wait for Hello (opcode 10) to get heartbeat interval
     let hello = read_next_text(&mut ws).await?;
-    let hello_payload: GatewayEvent = serde_json::from_str(&hello)
-        .context("failed to parse Hello")?;
+    let hello_payload: GatewayEvent =
+        serde_json::from_str(&hello).context("failed to parse Hello")?;
 
     let heartbeat_interval_ms = hello_payload
         .d
@@ -209,14 +213,35 @@ async fn handle_dispatch(
     match event_type {
         "READY" => {
             if let Some(d) = data {
-                let user = d.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str()).unwrap_or("unknown");
-                let guilds = d.get("guilds").and_then(|g| g.as_array()).map(|a| a.len()).unwrap_or(0);
+                let user = d
+                    .get("user")
+                    .and_then(|u| u.get("username"))
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("unknown");
+                let guilds = d
+                    .get("guilds")
+                    .and_then(|g| g.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
 
-                if let Some(id) = d.get("user").and_then(|u| u.get("id")).and_then(|v| v.as_str()) {
+                if let Some(id) = d
+                    .get("user")
+                    .and_then(|u| u.get("id"))
+                    .and_then(|v| v.as_str())
+                {
                     *bot_user_id.lock().await = Some(id.to_string());
-                    info!(bot_user = user, bot_id = id, guild_count = guilds, "Discord bot is READY");
+                    info!(
+                        bot_user = user,
+                        bot_id = id,
+                        guild_count = guilds,
+                        "Discord bot is READY"
+                    );
                 } else {
-                    info!(bot_user = user, guild_count = guilds, "Discord bot is READY (no user ID)");
+                    info!(
+                        bot_user = user,
+                        guild_count = guilds,
+                        "Discord bot is READY (no user ID)"
+                    );
                 }
             }
         }
@@ -251,7 +276,10 @@ async fn handle_message_create(
         return Ok(());
     }
 
-    let sender_id = author.and_then(|a| a.get("id")).and_then(|v| v.as_str()).unwrap_or("unknown");
+    let sender_id = author
+        .and_then(|a| a.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
 
     // Filter by allowed user IDs if configured
     if !cli.allowed_user_ids.is_empty() && !cli.allowed_user_ids.iter().any(|id| id == sender_id) {
@@ -261,12 +289,19 @@ async fn handle_message_create(
 
     let message_id = data.get("id").and_then(|v| v.as_str()).unwrap_or("");
     let content = data.get("content").and_then(|v| v.as_str()).unwrap_or("");
-    let channel_id = data.get("channel_id").and_then(|v| v.as_str()).unwrap_or("");
+    let channel_id = data
+        .get("channel_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let guild_id = data.get("guild_id").and_then(|v| v.as_str()).unwrap_or("");
     let timestamp = data.get("timestamp").and_then(|v| v.as_str()).unwrap_or("");
 
-    let sender_username = author.and_then(|a| a.get("username")).and_then(|v| v.as_str());
-    let sender_display = author.and_then(|a| a.get("global_name")).and_then(|v| v.as_str())
+    let sender_username = author
+        .and_then(|a| a.get("username"))
+        .and_then(|v| v.as_str());
+    let sender_display = author
+        .and_then(|a| a.get("global_name"))
+        .and_then(|v| v.as_str())
         .or_else(|| sender_username);
 
     // Parse timestamp to unix epoch
@@ -352,9 +387,7 @@ async fn handle_message_create(
     nats.publish(cli.ingest_subject.clone(), payload.into())
         .await
         .context("failed to publish to NATS")?;
-    nats.flush()
-        .await
-        .context("failed to flush NATS")?;
+    nats.flush().await.context("failed to flush NATS")?;
 
     Ok(())
 }
@@ -409,10 +442,7 @@ async fn fetch_thread_history(
             }
             let author = msg.get("author")?;
             let author_id = author.get("id")?.as_str()?;
-            let is_bot = author
-                .get("bot")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false);
+            let is_bot = author.get("bot").and_then(|b| b.as_bool()).unwrap_or(false);
             let username = author
                 .get("username")
                 .and_then(|v| v.as_str())

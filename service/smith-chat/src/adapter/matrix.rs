@@ -101,10 +101,7 @@ impl MatrixAdapter {
             .unwrap_or("m.text");
 
         let format = if msgtype == "m.text"
-            && content
-                .get("format")
-                .and_then(|v| v.as_str())
-                == Some("org.matrix.custom.html")
+            && content.get("format").and_then(|v| v.as_str()) == Some("org.matrix.custom.html")
         {
             MessageFormat::Markdown
         } else {

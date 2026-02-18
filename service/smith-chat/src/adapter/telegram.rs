@@ -59,16 +59,13 @@ impl TelegramAdapter {
         })?;
 
         let (sender_id, display_name, username, role) = if let Some(from) = msg.from {
-            let name = from
-                .first_name
-                .as_ref()
-                .map(|f| {
-                    if let Some(l) = &from.last_name {
-                        format!("{f} {l}")
-                    } else {
-                        f.clone()
-                    }
-                });
+            let name = from.first_name.as_ref().map(|f| {
+                if let Some(l) = &from.last_name {
+                    format!("{f} {l}")
+                } else {
+                    f.clone()
+                }
+            });
             let is_bot = from.is_bot.unwrap_or(false);
             (
                 from.id.to_string(),
@@ -163,11 +160,7 @@ impl ChatAdapter for TelegramAdapter {
     }
 
     async fn health_check(&self) -> Result<AdapterStatus> {
-        let response = self
-            .client
-            .get(self.api_url("getMe"))
-            .send()
-            .await?;
+        let response = self.client.get(self.api_url("getMe")).send().await?;
 
         let status = response.status();
         let payload: TelegramResponse<TelegramUser> = response.json().await?;
@@ -189,8 +182,7 @@ impl ChatAdapter for TelegramAdapter {
         if let Some(updates) = &self.config.allowed_updates {
             query.push((
                 "allowed_updates".to_string(),
-                serde_json::to_string(updates)
-                    .unwrap_or_else(|_| "[\"message\"]".to_string()),
+                serde_json::to_string(updates).unwrap_or_else(|_| "[\"message\"]".to_string()),
             ));
         }
 
@@ -205,7 +197,9 @@ impl ChatAdapter for TelegramAdapter {
         if !payload.ok {
             return Err(ChatBridgeError::other(format!(
                 "Telegram getUpdates failed: {}",
-                payload.description.unwrap_or_else(|| "unknown error".into())
+                payload
+                    .description
+                    .unwrap_or_else(|| "unknown error".into())
             )));
         }
 
@@ -256,8 +250,7 @@ impl ChatAdapter for TelegramAdapter {
         let msg = resp
             .result
             .ok_or_else(|| ChatBridgeError::other("Telegram response missing result"))?;
-        let timestamp = DateTime::<Utc>::from_timestamp(msg.date, 0)
-            .unwrap_or_else(Utc::now);
+        let timestamp = DateTime::<Utc>::from_timestamp(msg.date, 0).unwrap_or_else(Utc::now);
 
         Ok(SendReceipt {
             message_id: msg.message_id.to_string(),

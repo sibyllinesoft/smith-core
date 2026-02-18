@@ -16,6 +16,11 @@
     "resolveJsonModule": true,
     "isolatedModules": true
   },
-  "include": ["src/**/*"],
+  "include": [
+    "src/index.ts",
+    "src/cli.ts",
+    "src/agents.ts",
+    "src/lib.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }

@@ -15,18 +15,26 @@ use tracing::{debug, error, info};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "iMessage (BlueBubbles) Webhook Gateway → NATS bridge for Smith")]
+#[command(
+    author,
+    version,
+    about = "iMessage (BlueBubbles) Webhook Gateway → NATS bridge for Smith"
+)]
 struct Cli {
     /// Port to listen on for BlueBubbles webhook events
     #[arg(long, env = "IMESSAGE_WEBHOOK_PORT", default_value_t = 8091)]
     port: u16,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -100,10 +108,7 @@ async fn handle_new_message(gw: &GatewayContext, body: &Value) -> Result<()> {
         return Ok(());
     }
 
-    let text = data
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let text = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
     if text.is_empty() {
         return Ok(());
     }

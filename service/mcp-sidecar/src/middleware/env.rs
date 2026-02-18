@@ -51,10 +51,7 @@ mod tests {
     fn multiple_vars() {
         env::set_var("_TEST_MCP_X", "1");
         env::set_var("_TEST_MCP_Y", "2");
-        assert_eq!(
-            interpolate_env("${_TEST_MCP_X}+${_TEST_MCP_Y}"),
-            "1+2"
-        );
+        assert_eq!(interpolate_env("${_TEST_MCP_X}+${_TEST_MCP_Y}"), "1+2");
         env::remove_var("_TEST_MCP_X");
         env::remove_var("_TEST_MCP_Y");
     }

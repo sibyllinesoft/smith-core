@@ -17,11 +17,15 @@ struct Cli {
     bot_token: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -168,7 +172,9 @@ async fn poll_updates(
 
     let payload: TelegramResponse<Vec<TelegramUpdate>> = resp.json().await?;
     if !payload.ok {
-        let desc = payload.description.unwrap_or_else(|| "unknown error".into());
+        let desc = payload
+            .description
+            .unwrap_or_else(|| "unknown error".into());
         anyhow::bail!("Telegram getUpdates failed: {desc}");
     }
 

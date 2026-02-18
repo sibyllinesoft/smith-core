@@ -64,7 +64,7 @@ path = "src/bin/mattermost_gateway.rs"
 # path = "src/bin/daemon.rs"
 
 [features]
-default = []
+default = ["webhooks"]
 otel-exporter = ["dep:opentelemetry", "dep:opentelemetry_sdk"]
 webhooks = ["dep:axum"]
 
@@ -92,6 +92,8 @@ uuid = { workspace = true }
 jsonwebtoken = "9"
 rand = "0.8"
 axum = { version = "0.7", optional = true }
+hmac = "0.12"
+sha2 = { workspace = true }
 opentelemetry = { version = "0.24", features = ["trace"], optional = true }
 opentelemetry_sdk = { version = "0.24", features = ["trace"], optional = true }
 

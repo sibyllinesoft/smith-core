@@ -48,17 +48,15 @@ pub mod webhook;
 pub use adapter::{
     discord::DiscordAdapter, google_chat::GoogleChatAdapter, imessage::IMessageAdapter,
     matrix::MatrixAdapter, mattermost::MattermostAdapter, signal::SignalAdapter,
-    slack::SlackAdapter, teams::TeamsAdapter, telegram::TelegramAdapter,
-    whatsapp::WhatsAppAdapter, AdapterCapabilities, AdapterStatus, ChatAdapter, FetchRequest,
-    OutgoingMessage, SendReceipt,
-};
-pub use bridge::ChatBridge;
-pub use config::{
-    AdapterConfig, ChatBridgeConfig, DiscordConfig, GoogleChatConfig, IMessageConfig,
-    MatrixConfig, MattermostConfig, SignalConfig, SlackConfig, TeamsConfig, TelegramConfig,
-    WhatsAppConfig,
+    slack::SlackAdapter, teams::TeamsAdapter, telegram::TelegramAdapter, whatsapp::WhatsAppAdapter,
+    AdapterCapabilities, AdapterStatus, ChatAdapter, FetchRequest, OutgoingMessage, SendReceipt,
 };
 pub use allowlist::{Allowlist, AllowlistAction, AllowlistConfig, AllowlistMatcher, AllowlistRule};
+pub use bridge::ChatBridge;
+pub use config::{
+    AdapterConfig, ChatBridgeConfig, DiscordConfig, GoogleChatConfig, IMessageConfig, MatrixConfig,
+    MattermostConfig, SignalConfig, SlackConfig, TeamsConfig, TelegramConfig, WhatsAppConfig,
+};
 pub use error::{ChatBridgeError, Result};
 #[cfg(feature = "otel-exporter")]
 pub use exporter::MattermostTasksExporter;

@@ -4,14 +4,14 @@ import { join } from "path";
 import { findSmithRoot } from "./lib.js";
 
 const smithRoot = findSmithRoot(process.cwd())!;
-const skillsDir = join(smithRoot, "packages", "smith-installer", "skills");
+const skillsDir = join(smithRoot, "installer", "skills");
 const skillDirs = readdirSync(skillsDir).filter((e) =>
   statSync(join(skillsDir, e)).isDirectory()
 );
 
 describe("SKILL.md structural validation", () => {
-  it("exactly 10 skill directories exist", () => {
-    expect(skillDirs).toHaveLength(10);
+  it("exactly 16 skill directories exist", () => {
+    expect(skillDirs).toHaveLength(16);
   });
 
   it("every directory has a SKILL.md", () => {

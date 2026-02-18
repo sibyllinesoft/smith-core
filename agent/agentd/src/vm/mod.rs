@@ -9,7 +9,7 @@ use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use smith_config::executor::VmPoolConfig;
+use smith_config::executor::{GondolinAdapterConfig, VmMethod, VmPoolConfig};
 use tar::Builder;
 use tokio::process::Command;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
@@ -23,6 +23,7 @@ use zstd::Encoder;
 #[derive(Clone, Debug)]
 pub struct VmPoolRuntimeConfig {
     pub enabled: bool,
+    pub method: VmMethod,
     pub volume_root: PathBuf,
     pub nix_profile: Option<String>,
     pub shell: PathBuf,
@@ -34,12 +35,14 @@ pub struct VmPoolRuntimeConfig {
     pub backup_after: Option<Duration>,
     pub backup_destination: Option<PathBuf>,
     pub bootstrap_command: Option<Vec<String>>,
+    pub gondolin: GondolinAdapterConfig,
 }
 
 impl From<&VmPoolConfig> for VmPoolRuntimeConfig {
     fn from(config: &VmPoolConfig) -> Self {
         Self {
             enabled: config.enabled,
+            method: config.method,
             volume_root: config.volume_root.clone(),
             nix_profile: config.nix_profile.clone(),
             shell: config.shell.clone(),
@@ -51,6 +54,7 @@ impl From<&VmPoolConfig> for VmPoolRuntimeConfig {
             backup_after: config.backup_after_seconds.map(Duration::from_secs),
             backup_destination: config.backup_destination.clone(),
             bootstrap_command: config.bootstrap_command.clone(),
+            gondolin: config.gondolin.clone(),
         }
     }
 }
@@ -235,6 +239,14 @@ impl VmExecutionGuard {
 
     pub fn shell_args(&self) -> &[String] {
         &self.vm.config.shell_args
+    }
+
+    pub fn method(&self) -> VmMethod {
+        self.vm.config.method
+    }
+
+    pub fn gondolin_config(&self) -> &GondolinAdapterConfig {
+        &self.vm.config.gondolin
     }
 
     pub fn environment(&self) -> &HashMap<String, String> {
@@ -528,6 +540,7 @@ mod tests {
     fn create_test_vm_pool_config(volume_root: PathBuf) -> VmPoolConfig {
         VmPoolConfig {
             enabled: true,
+            method: VmMethod::Host,
             volume_root,
             nix_profile: None,
             shell: PathBuf::from("/bin/bash"),
@@ -539,6 +552,7 @@ mod tests {
             backup_after_seconds: None,
             backup_destination: None,
             bootstrap_command: None,
+            gondolin: GondolinAdapterConfig::default(),
         }
     }
 
@@ -553,12 +567,17 @@ mod tests {
         assert_eq!(runtime_config.volume_root, temp.path());
         assert_eq!(runtime_config.shell, PathBuf::from("/bin/bash"));
         assert_eq!(runtime_config.shell_args, vec!["-c".to_string()]);
+        assert_eq!(runtime_config.method, VmMethod::Host);
         assert_eq!(runtime_config.max_vms, 4);
         assert_eq!(runtime_config.idle_shutdown, Duration::from_secs(60));
         assert_eq!(runtime_config.prune_after, Duration::from_secs(120));
         assert!(runtime_config.backup_after.is_none());
         assert!(runtime_config.backup_destination.is_none());
         assert!(runtime_config.bootstrap_command.is_none());
+        assert_eq!(
+            runtime_config.gondolin.args,
+            vec!["exec".to_string(), "--".to_string()]
+        );
     }
 
     #[test]
@@ -750,6 +769,7 @@ mod tests {
         assert_eq!(guard.session_id(), session_id);
         assert_eq!(guard.shell_path(), PathBuf::from("/bin/bash"));
         assert_eq!(guard.shell_args(), &["-c".to_string()]);
+        assert_eq!(guard.method(), VmMethod::Host);
         assert!(guard.environment().is_empty());
         assert!(guard.workdir().ends_with("volume"));
     }

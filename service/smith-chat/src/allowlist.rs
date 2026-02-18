@@ -73,11 +73,7 @@ impl Allowlist {
 
     /// Evaluate a participant against the allowlist rules.
     /// First matching rule wins; if none match, the default action applies.
-    pub fn evaluate(
-        &self,
-        participant: &Participant,
-        platform: ChatPlatform,
-    ) -> AllowlistAction {
+    pub fn evaluate(&self, participant: &Participant, platform: ChatPlatform) -> AllowlistAction {
         for rule in &self.config.rules {
             if Self::matches(&rule.matcher, participant, platform) {
                 return rule.action;
@@ -173,7 +169,10 @@ mod tests {
         });
 
         let p = make_participant("123", None, vec![]);
-        assert_eq!(allowlist.evaluate(&p, ChatPlatform::Telegram), AllowlistAction::Allow);
+        assert_eq!(
+            allowlist.evaluate(&p, ChatPlatform::Telegram),
+            AllowlistAction::Allow
+        );
     }
 
     #[test]
@@ -190,8 +189,14 @@ mod tests {
 
         let allowed = make_participant("user42", None, vec![]);
         let denied = make_participant("user99", None, vec![]);
-        assert_eq!(allowlist.evaluate(&allowed, ChatPlatform::Discord), AllowlistAction::Allow);
-        assert_eq!(allowlist.evaluate(&denied, ChatPlatform::Discord), AllowlistAction::Deny);
+        assert_eq!(
+            allowlist.evaluate(&allowed, ChatPlatform::Discord),
+            AllowlistAction::Allow
+        );
+        assert_eq!(
+            allowlist.evaluate(&denied, ChatPlatform::Discord),
+            AllowlistAction::Deny
+        );
     }
 
     #[test]
@@ -207,7 +212,10 @@ mod tests {
         });
 
         let p = make_participant("1", Some("admin"), vec![]);
-        assert_eq!(allowlist.evaluate(&p, ChatPlatform::Telegram), AllowlistAction::Allow);
+        assert_eq!(
+            allowlist.evaluate(&p, ChatPlatform::Telegram),
+            AllowlistAction::Allow
+        );
     }
 
     #[test]
@@ -216,16 +224,20 @@ mod tests {
             default_action: AllowlistAction::Deny,
             rules: vec![AllowlistRule {
                 action: AllowlistAction::Allow,
-                matcher: AllowlistMatcher::Tag {
-                    tag: "vip".into(),
-                },
+                matcher: AllowlistMatcher::Tag { tag: "vip".into() },
             }],
         });
 
         let vip = make_participant("1", None, vec!["vip", "beta"]);
         let regular = make_participant("2", None, vec!["beta"]);
-        assert_eq!(allowlist.evaluate(&vip, ChatPlatform::Slack), AllowlistAction::Allow);
-        assert_eq!(allowlist.evaluate(&regular, ChatPlatform::Slack), AllowlistAction::Deny);
+        assert_eq!(
+            allowlist.evaluate(&vip, ChatPlatform::Slack),
+            AllowlistAction::Allow
+        );
+        assert_eq!(
+            allowlist.evaluate(&regular, ChatPlatform::Slack),
+            AllowlistAction::Deny
+        );
     }
 
     #[test]
@@ -241,8 +253,14 @@ mod tests {
         });
 
         let p = make_participant("1", None, vec![]);
-        assert_eq!(allowlist.evaluate(&p, ChatPlatform::Telegram), AllowlistAction::Allow);
-        assert_eq!(allowlist.evaluate(&p, ChatPlatform::Discord), AllowlistAction::Deny);
+        assert_eq!(
+            allowlist.evaluate(&p, ChatPlatform::Telegram),
+            AllowlistAction::Allow
+        );
+        assert_eq!(
+            allowlist.evaluate(&p, ChatPlatform::Discord),
+            AllowlistAction::Deny
+        );
     }
 
     #[test]
@@ -265,8 +283,14 @@ mod tests {
 
         let blocked = make_participant("blocked", None, vec![]);
         let other = make_participant("other", None, vec![]);
-        assert_eq!(allowlist.evaluate(&blocked, ChatPlatform::Slack), AllowlistAction::Deny);
-        assert_eq!(allowlist.evaluate(&other, ChatPlatform::Slack), AllowlistAction::Allow);
+        assert_eq!(
+            allowlist.evaluate(&blocked, ChatPlatform::Slack),
+            AllowlistAction::Deny
+        );
+        assert_eq!(
+            allowlist.evaluate(&other, ChatPlatform::Slack),
+            AllowlistAction::Allow
+        );
     }
 
     #[test]
@@ -283,10 +307,16 @@ mod tests {
 
         let mut p = make_participant("1", None, vec![]);
         p.display_name = Some("Administrator".into());
-        assert_eq!(allowlist.evaluate(&p, ChatPlatform::Slack), AllowlistAction::Allow);
+        assert_eq!(
+            allowlist.evaluate(&p, ChatPlatform::Slack),
+            AllowlistAction::Allow
+        );
 
         p.display_name = Some("Regular User".into());
-        assert_eq!(allowlist.evaluate(&p, ChatPlatform::Slack), AllowlistAction::Deny);
+        assert_eq!(
+            allowlist.evaluate(&p, ChatPlatform::Slack),
+            AllowlistAction::Deny
+        );
     }
 
     #[test]
@@ -313,7 +343,13 @@ mod tests {
         });
 
         let p = make_participant("1", None, vec![]);
-        assert_eq!(deny_by_default.evaluate(&p, ChatPlatform::Slack), AllowlistAction::Deny);
-        assert_eq!(allow_by_default.evaluate(&p, ChatPlatform::Slack), AllowlistAction::Allow);
+        assert_eq!(
+            deny_by_default.evaluate(&p, ChatPlatform::Slack),
+            AllowlistAction::Deny
+        );
+        assert_eq!(
+            allow_by_default.evaluate(&p, ChatPlatform::Slack),
+            AllowlistAction::Allow
+        );
     }
 }

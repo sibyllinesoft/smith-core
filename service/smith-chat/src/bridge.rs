@@ -1,8 +1,8 @@
 use crate::adapter::{
     discord::DiscordAdapter, google_chat::GoogleChatAdapter, imessage::IMessageAdapter,
     matrix::MatrixAdapter, mattermost::MattermostAdapter, signal::SignalAdapter,
-    slack::SlackAdapter, teams::TeamsAdapter, telegram::TelegramAdapter,
-    whatsapp::WhatsAppAdapter, ChatAdapter, FetchRequest, OutgoingMessage, SendReceipt,
+    slack::SlackAdapter, teams::TeamsAdapter, telegram::TelegramAdapter, whatsapp::WhatsAppAdapter,
+    ChatAdapter, FetchRequest, OutgoingMessage, SendReceipt,
 };
 use crate::config::{AdapterConfig, ChatBridgeConfig};
 use crate::error::{ChatBridgeError, Result};

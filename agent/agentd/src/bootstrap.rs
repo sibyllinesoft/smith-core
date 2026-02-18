@@ -188,10 +188,19 @@ fn ensure_directories(config: &Config) -> Result<()> {
             let mode = metadata.permissions().mode() & 0o777;
             if mode != 0o700 {
                 warn!(
-                    "Directory {} has permissions {:o}, expected 0700",
+                    "Directory {} has permissions {:o}, fixing to 0700",
                     dir.display(),
                     mode
                 );
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o700);
+                if let Err(err) = fs::set_permissions(dir, perms) {
+                    warn!(
+                        "Failed to set permissions for {} to 0700: {}",
+                        dir.display(),
+                        err
+                    );
+                }
             }
         }
     }

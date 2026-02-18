@@ -14,7 +14,11 @@ use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Parser)]
-#[command(author, version, about = "Slack Socket Mode Gateway → NATS bridge for Smith")]
+#[command(
+    author,
+    version,
+    about = "Slack Socket Mode Gateway → NATS bridge for Smith"
+)]
 struct Cli {
     /// Slack app-level token (xapp-...) for Socket Mode
     #[arg(long, env = "SLACK_APP_TOKEN")]
@@ -25,11 +29,15 @@ struct Cli {
     bot_token: String,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -135,9 +143,7 @@ async fn run_socket_mode(
                 match event.event_type.as_deref() {
                     Some("events_api") => {
                         if let Some(payload) = &event.payload {
-                            if let Err(err) =
-                                handle_events_api(cli, nats, http, payload).await
-                            {
+                            if let Err(err) = handle_events_api(cli, nats, http, payload).await {
                                 error!(error = ?err, "Failed to handle events_api payload");
                             }
                         }
@@ -182,10 +188,7 @@ async fn handle_events_api(
         None => return Ok(()),
     };
 
-    let event_type = event
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
     if event_type != "message" {
         debug!(event_type, "Ignoring non-message event");
@@ -216,10 +219,7 @@ async fn handle_events_api(
         return Ok(());
     }
 
-    let channel = event
-        .get("channel")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let channel = event.get("channel").and_then(|v| v.as_str()).unwrap_or("");
     let ts = event.get("ts").and_then(|v| v.as_str()).unwrap_or("");
     let thread_ts = event
         .get("thread_ts")
@@ -229,8 +229,15 @@ async fn handle_events_api(
 
     // Fetch thread history if this is a threaded message
     let thread_history = if cli.thread_history_limit > 0 && thread_ts != ts {
-        fetch_thread_history(http, &cli.bot_token, channel, thread_ts, ts, cli.thread_history_limit)
-            .await
+        fetch_thread_history(
+            http,
+            &cli.bot_token,
+            channel,
+            thread_ts,
+            ts,
+            cli.thread_history_limit,
+        )
+        .await
     } else {
         Vec::new()
     };
@@ -329,7 +336,10 @@ async fn fetch_thread_history(
             if text.is_empty() {
                 return None;
             }
-            let user = msg.get("user").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let user = msg
+                .get("user")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             let bot_id = msg.get("bot_id").and_then(|v| v.as_str());
             let ts = msg.get("ts").and_then(|v| v.as_str()).unwrap_or("");
 

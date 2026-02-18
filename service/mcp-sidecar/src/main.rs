@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long, env = "MCP_SIDECAR_MIDDLEWARE")]
     middleware: Option<PathBuf>,
 
+    /// Optional API token for protecting sidecar APIs (Authorization: Bearer <token>)
+    #[arg(long, env = "MCP_SIDECAR_API_TOKEN")]
+    api_token: Option<String>,
+
     /// The MCP server command and arguments (everything after --)
     #[arg(trailing_var_arg = true, required = true)]
     command: Vec<String>,
@@ -48,14 +52,16 @@ pub struct AppState {
     pub config: SpawnConfig,
     pub middleware: RwLock<Option<Arc<MiddlewareConfig>>>,
     pub middleware_path: Option<PathBuf>,
+    pub api_token: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("mcp_sidecar=info")
-        }))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("mcp_sidecar=info")),
+        )
         .init();
 
     let cli = Cli::parse();
@@ -68,17 +74,13 @@ async fn main() -> Result<()> {
     let args: Vec<String> = cli.command[1..].to_vec();
     let service_name = cli.name.as_deref().unwrap_or(program);
 
-    tracing::info!(
-        service_name,
-        port = cli.port,
-        "starting mcp-sidecar"
-    );
+    tracing::info!(service_name, port = cli.port, "starting mcp-sidecar");
 
     // Load middleware config if provided
     let mw = match &cli.middleware {
         Some(path) => {
-            let config = MiddlewareConfig::load(path)
-                .context("failed to load middleware config")?;
+            let config =
+                MiddlewareConfig::load(path).context("failed to load middleware config")?;
             Some(Arc::new(config))
         }
         None => None,
@@ -100,6 +102,7 @@ async fn main() -> Result<()> {
         config: spawn_config,
         middleware: RwLock::new(mw),
         middleware_path: cli.middleware,
+        api_token: cli.api_token.filter(|v| !v.trim().is_empty()),
     });
 
     // Build HTTP router

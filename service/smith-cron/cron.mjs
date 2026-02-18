@@ -8,7 +8,7 @@
  * via NATS subscription on smith.cron.reload.
  *
  * Env:
- *   NATS_URL       (default: nats://127.0.0.1:7222)
+ *   NATS_URL       (default: nats://127.0.0.1:4222)
  *   SMITH_CRON_PG  (default: postgresql://smith_app:smith-app-dev@postgres:5432/smith)
  */
 
@@ -16,7 +16,7 @@ import { connect, StringCodec } from "nats";
 import pg from "pg";
 import { Cron } from "croner";
 
-const NATS_URL = process.env.NATS_URL ?? "nats://127.0.0.1:7222";
+const NATS_URL = process.env.NATS_URL ?? "nats://127.0.0.1:4222";
 const PG_URL =
   process.env.SMITH_CRON_PG ??
   "postgresql://smith_app:smith-app-dev@postgres:5432/smith";

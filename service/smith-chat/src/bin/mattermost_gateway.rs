@@ -29,11 +29,15 @@ struct Cli {
     team_id: Option<String>,
 
     /// NATS server URL
-    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:7222")]
+    #[arg(long, env = "SMITH_NATS_URL", default_value = "nats://127.0.0.1:4222")]
     nats_url: String,
 
     /// NATS subject to publish bridge envelopes to
-    #[arg(long, env = "CHAT_BRIDGE_INGEST_SUBJECT", default_value = "smith.chatbridge.ingest")]
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_INGEST_SUBJECT",
+        default_value = "smith.chatbridge.ingest"
+    )]
     ingest_subject: String,
 
     /// Optional shared secret included in envelopes
@@ -190,20 +194,14 @@ async fn handle_posted(
     };
 
     // The "post" field is a JSON string within the data object
-    let post_str = data
-        .get("post")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let post_str = data.get("post").and_then(|v| v.as_str()).unwrap_or("");
     if post_str.is_empty() {
         return Ok(());
     }
 
     let post: Value = serde_json::from_str(post_str)?;
 
-    let user_id = post
-        .get("user_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let user_id = post.get("user_id").and_then(|v| v.as_str()).unwrap_or("");
 
     // Skip own messages
     if user_id == bot_info.user_id {
@@ -217,10 +215,7 @@ async fn handle_posted(
         return Ok(());
     }
 
-    let message = post
-        .get("message")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let message = post.get("message").and_then(|v| v.as_str()).unwrap_or("");
     if message.is_empty() {
         return Ok(());
     }
