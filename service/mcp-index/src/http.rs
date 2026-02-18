@@ -71,7 +71,12 @@ async fn index_html() -> Html<&'static str> {
 
 // ── GET /health ─────────────────────────────────────────────────────────
 
-async fn health(State(state): State<AppState>) -> Json<Value> {
+async fn health(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    require_api_token(&state, &headers)?;
+
     let servers = state.servers.read().await;
     let total = servers.len();
     let healthy = servers.iter().filter(|s| s.healthy).count();
@@ -81,13 +86,13 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         .map(|s| s.tools_count)
         .sum();
 
-    Json(json!({
+    Ok(Json(json!({
         "status": "ok",
         "servers_total": total,
         "servers_healthy": healthy,
         "servers_unhealthy": total - healthy,
         "tools_total": tools_total,
-    }))
+    })))
 }
 
 // ── GET /api/servers ────────────────────────────────────────────────────
@@ -218,6 +223,7 @@ async fn tools_call(
     let resp = state
         .client
         .post(&upstream_url)
+        .headers(upstream_auth_headers(state.upstream_api_token.as_deref()))
         .json(&req.arguments)
         .send()
         .await
@@ -318,7 +324,13 @@ async fn auth_callback(
     let upstream = state.upstreams.iter().find(|u| u.name == pending.server);
     if let Some(upstream) = upstream {
         let reload_url = format!("{}/reload", upstream.url);
-        match state.client.post(&reload_url).send().await {
+        match state
+            .client
+            .post(&reload_url)
+            .headers(upstream_auth_headers(state.upstream_api_token.as_deref()))
+            .send()
+            .await
+        {
             Ok(resp) if resp.status().is_success() => {
                 tracing::info!(server = %pending.server, "triggered shim reload");
             }
@@ -371,4 +383,17 @@ p{{margin:8px 0;color:#a3a3a3;word-break:break-word}}</style></head>
 </div></body></html>"#,
         error = error,
     ))
+}
+
+fn upstream_auth_headers(token: Option<&str>) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Some(token) = token {
+        if let Ok(value) = format!("Bearer {token}").parse() {
+            headers.insert(header::AUTHORIZATION, value);
+        }
+        if let Ok(value) = token.parse() {
+            headers.insert("x-smith-token", value);
+        }
+    }
+    headers
 }

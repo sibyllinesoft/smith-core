@@ -48,6 +48,7 @@ pub struct IndexState {
     pub oauth: Arc<OAuthState>,
     pub base_url: String,
     pub api_token: Option<String>,
+    pub upstream_api_token: Option<String>,
 }
 
 // ── Upstream health response ────────────────────────────────────────────
@@ -102,7 +103,7 @@ async fn poll_all(client: &reqwest::Client, state: &IndexState) {
     let mut entries = Vec::with_capacity(state.upstreams.len());
 
     for upstream in &state.upstreams {
-        let mut entry = poll_one(client, upstream).await;
+        let mut entry = poll_one(client, upstream, state.upstream_api_token.as_deref()).await;
 
         // Set auth fields based on OAuth provider config
         if let Some(provider) = state.oauth.providers.get(&upstream.name) {
@@ -124,12 +125,19 @@ async fn poll_all(client: &reqwest::Client, state: &IndexState) {
     *state.servers.write().await = entries;
 }
 
-async fn poll_one(client: &reqwest::Client, upstream: &Upstream) -> ServerEntry {
+async fn poll_one(
+    client: &reqwest::Client,
+    upstream: &Upstream,
+    upstream_api_token: Option<&str>,
+) -> ServerEntry {
     let now = chrono_now();
 
     // Fetch health
     let health_url = format!("{}/health", upstream.url);
-    let health = match client.get(&health_url).send().await {
+    let health = match authed_request(client.get(&health_url), upstream_api_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json::<HealthResponse>().await {
             Ok(h) => Some(h),
             Err(e) => {
@@ -146,7 +154,10 @@ async fn poll_one(client: &reqwest::Client, upstream: &Upstream) -> ServerEntry 
 
     // Fetch tools
     let tools_url = format!("{}/tools", upstream.url);
-    let tools: Vec<McpTool> = match client.get(&tools_url).send().await {
+    let tools: Vec<McpTool> = match authed_request(client.get(&tools_url), upstream_api_token)
+        .send()
+        .await
+    {
         Ok(resp) if resp.status().is_success() => match resp.json().await {
             Ok(t) => t,
             Err(e) => {
@@ -183,6 +194,19 @@ async fn poll_one(client: &reqwest::Client, upstream: &Upstream) -> ServerEntry 
         error: None,
         auth_type: "none".to_string(),
         needs_auth: false,
+    }
+}
+
+fn authed_request(
+    request: reqwest::RequestBuilder,
+    upstream_api_token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    if let Some(token) = upstream_api_token {
+        request
+            .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            .header("x-smith-token", token)
+    } else {
+        request
     }
 }
 

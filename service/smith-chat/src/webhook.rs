@@ -7,6 +7,7 @@ use axum::{
     Json, Router,
 };
 use chrono::Utc;
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -19,8 +20,16 @@ use crate::pairing_store::PairingStore;
 /// Shared state for webhook handlers.
 pub struct WebhookState {
     pub nats: async_nats::Client,
+    /// When true, webhook endpoints reject unsigned/unauthenticated requests.
+    pub require_signed_webhooks: bool,
+    /// Optional Telegram webhook secret token expected in X-Telegram-Bot-Api-Secret-Token.
+    pub telegram_webhook_secret: Option<String>,
+    /// Optional Discord interactions public key (hex) for Ed25519 verification.
+    pub discord_public_key: Option<String>,
     /// Optional verify token for WhatsApp webhook verification.
     pub whatsapp_verify_token: Option<String>,
+    /// Optional WhatsApp app secret used to validate X-Hub-Signature-256.
+    pub whatsapp_app_secret: Option<String>,
     /// Optional GitHub webhook secret used to validate X-Hub-Signature-256.
     pub github_webhook_secret: Option<String>,
     /// Subject to publish normalized GitHub orchestration events to.
@@ -46,8 +55,13 @@ pub fn router(state: Arc<WebhookState>) -> Router {
 
 async fn telegram_webhook(
     State(state): State<Arc<WebhookState>>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
+    if let Some(response) = require_telegram_auth(&state, &headers) {
+        return response;
+    }
+
     info!("Received Telegram webhook");
 
     let subject = "smith.chatbridge.ingest.telegram";
@@ -55,22 +69,39 @@ async fn telegram_webhook(
         Ok(bytes) => {
             if let Err(err) = state.nats.publish(subject.to_string(), bytes.into()).await {
                 error!(error = ?err, "Failed to publish Telegram webhook to NATS");
-                return StatusCode::INTERNAL_SERVER_ERROR;
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
         Err(err) => {
             error!(error = ?err, "Failed to serialize Telegram payload");
-            return StatusCode::BAD_REQUEST;
+            return StatusCode::BAD_REQUEST.into_response();
         }
     }
 
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn discord_webhook(
     State(state): State<Arc<WebhookState>>,
-    Json(payload): Json<Value>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
+    if let Some(response) = require_discord_auth(&state, &headers, &body) {
+        return response;
+    }
+
+    let payload: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(error = ?err, "Rejected Discord webhook with invalid JSON payload");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid JSON payload"})),
+            )
+                .into_response();
+        }
+    };
+
     // Discord interaction verification: respond to PING (type=1) with PONG
     if let Some(1) = payload.get("type").and_then(|t| t.as_u64()) {
         info!("Responding to Discord PING interaction");
@@ -98,8 +129,25 @@ async fn discord_webhook(
 
 async fn whatsapp_webhook(
     State(state): State<Arc<WebhookState>>,
-    Json(payload): Json<Value>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> impl IntoResponse {
+    if let Some(response) = require_whatsapp_auth(&state, &headers, &body) {
+        return response;
+    }
+
+    let payload: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        Err(err) => {
+            warn!(error = ?err, "Rejected WhatsApp webhook with invalid JSON payload");
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "invalid JSON payload"})),
+            )
+                .into_response();
+        }
+    };
+
     info!("Received WhatsApp webhook");
 
     let subject = "smith.chatbridge.ingest.whatsapp";
@@ -107,16 +155,16 @@ async fn whatsapp_webhook(
         Ok(bytes) => {
             if let Err(err) = state.nats.publish(subject.to_string(), bytes.into()).await {
                 error!(error = ?err, "Failed to publish WhatsApp webhook to NATS");
-                return StatusCode::INTERNAL_SERVER_ERROR;
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         }
         Err(err) => {
             error!(error = ?err, "Failed to serialize WhatsApp payload");
-            return StatusCode::BAD_REQUEST;
+            return StatusCode::BAD_REQUEST.into_response();
         }
     }
 
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 async fn github_webhook(
@@ -124,6 +172,14 @@ async fn github_webhook(
     headers: HeaderMap,
     body: Bytes,
 ) -> impl IntoResponse {
+    if state.require_signed_webhooks && state.github_webhook_secret.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "github webhook secret is not configured"})),
+        )
+            .into_response();
+    }
+
     let event = headers
         .get("x-github-event")
         .and_then(|v| v.to_str().ok())
@@ -232,6 +288,14 @@ async fn whatsapp_verify(
     State(state): State<Arc<WebhookState>>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if state.require_signed_webhooks && state.whatsapp_verify_token.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "whatsapp verify token not configured",
+        )
+            .into_response();
+    }
+
     let mode = params.get("hub.mode").cloned().unwrap_or_default();
     let token = params.get("hub.verify_token").cloned().unwrap_or_default();
     let challenge = params.get("hub.challenge").cloned().unwrap_or_default();
@@ -260,22 +324,22 @@ async fn create_pairing_code(
     headers: axum::http::HeaderMap,
     Json(body): Json<CreatePairingCodeRequest>,
 ) -> impl IntoResponse {
-    // Verify bearer token if admin_token is configured
-    if let Some(expected) = &state.admin_token {
-        let provided = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "));
+    if state.require_signed_webhooks && state.admin_token.is_none() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "admin token not configured"})),
+        )
+            .into_response();
+    }
 
-        match provided {
-            Some(token) if token == expected => {}
-            _ => {
-                return (
-                    StatusCode::UNAUTHORIZED,
-                    Json(json!({"error": "unauthorized"})),
-                )
-                    .into_response();
-            }
+    // Verify bearer token when configured.
+    if let Some(expected) = &state.admin_token {
+        if bearer_from_headers(&headers).as_deref() != Some(expected.as_str()) {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "unauthorized"})),
+            )
+                .into_response();
         }
     }
 
@@ -305,6 +369,151 @@ async fn create_pairing_code(
 
 type HmacSha256 = Hmac<Sha256>;
 
+fn bearer_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+
+fn require_telegram_auth(
+    state: &WebhookState,
+    headers: &HeaderMap,
+) -> Option<axum::response::Response> {
+    if state.require_signed_webhooks && state.telegram_webhook_secret.is_none() {
+        return Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "telegram webhook secret is not configured"})),
+            )
+                .into_response(),
+        );
+    }
+    let Some(expected) = state.telegram_webhook_secret.as_deref() else {
+        return None;
+    };
+    let provided = headers
+        .get("x-telegram-bot-api-secret-token")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .unwrap_or_default();
+    if provided != expected {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid telegram webhook secret"})),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+fn require_discord_auth(
+    state: &WebhookState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<axum::response::Response> {
+    if state.require_signed_webhooks && state.discord_public_key.is_none() {
+        return Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "discord public key is not configured"})),
+            )
+                .into_response(),
+        );
+    }
+
+    let Some(public_key_hex) = state.discord_public_key.as_deref() else {
+        return None;
+    };
+    let Some(signature_hex) = headers
+        .get("x-signature-ed25519")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+    else {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "missing discord signature"})),
+            )
+                .into_response(),
+        );
+    };
+    let Some(timestamp) = headers
+        .get("x-signature-timestamp")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+    else {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "missing discord signature timestamp"})),
+            )
+                .into_response(),
+        );
+    };
+
+    if !verify_discord_signature(public_key_hex, timestamp, body, signature_hex) {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid discord signature"})),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+fn require_whatsapp_auth(
+    state: &WebhookState,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Option<axum::response::Response> {
+    if state.require_signed_webhooks && state.whatsapp_app_secret.is_none() {
+        return Some(
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({"error": "whatsapp app secret is not configured"})),
+            )
+                .into_response(),
+        );
+    }
+
+    let Some(secret) = state.whatsapp_app_secret.as_deref() else {
+        return None;
+    };
+    let Some(signature) = headers
+        .get("x-hub-signature-256")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+    else {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "missing whatsapp signature"})),
+            )
+                .into_response(),
+        );
+    };
+    if !verify_github_signature(secret, body, signature) {
+        return Some(
+            (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({"error": "invalid whatsapp signature"})),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
 fn verify_github_signature(secret: &str, body: &[u8], signature_header: &str) -> bool {
     let Some(signature_bytes) = parse_github_signature(signature_header) else {
         return false;
@@ -318,12 +527,40 @@ fn verify_github_signature(secret: &str, body: &[u8], signature_header: &str) ->
 
 fn parse_github_signature(signature_header: &str) -> Option<[u8; 32]> {
     let signature_hex = signature_header.strip_prefix("sha256=")?;
-    if signature_hex.len() != 64 {
+    parse_fixed_hex::<32>(signature_hex)
+}
+
+fn verify_discord_signature(
+    public_key_hex: &str,
+    timestamp: &str,
+    body: &[u8],
+    signature_hex: &str,
+) -> bool {
+    let Some(public_key_bytes) = parse_fixed_hex::<32>(public_key_hex) else {
+        return false;
+    };
+    let Some(signature_bytes) = parse_fixed_hex::<64>(signature_hex) else {
+        return false;
+    };
+    let Ok(public_key) = VerifyingKey::from_bytes(&public_key_bytes) else {
+        return false;
+    };
+    let signature = Signature::from_bytes(&signature_bytes);
+
+    let mut msg = Vec::with_capacity(timestamp.len() + body.len());
+    msg.extend_from_slice(timestamp.as_bytes());
+    msg.extend_from_slice(body);
+
+    public_key.verify(&msg, &signature).is_ok()
+}
+
+fn parse_fixed_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
+    if value.len() != N * 2 {
         return None;
     }
-    let mut out = [0u8; 32];
-    let bytes = signature_hex.as_bytes();
-    for idx in 0..32 {
+    let mut out = [0u8; N];
+    let bytes = value.as_bytes();
+    for idx in 0..N {
         let hi = hex_nibble(bytes[idx * 2])?;
         let lo = hex_nibble(bytes[idx * 2 + 1])?;
         out[idx] = (hi << 4) | lo;

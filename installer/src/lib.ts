@@ -219,6 +219,19 @@ function looksLikeWeakSecret(value: string, weakValues: string[]): boolean {
   return normalized.length === 0 || weakValues.includes(normalized);
 }
 
+function looksLikeWeakToken(value: string, minLength = 24): boolean {
+  const normalized = value.trim();
+  const lower = normalized.toLowerCase();
+  if (normalized.length < minLength) {
+    return true;
+  }
+  return (
+    lower.startsWith("change-me") ||
+    lower.startsWith("changeme") ||
+    lower.startsWith("replace-with-")
+  );
+}
+
 function isLikelyLoopbackListen(value: string): boolean {
   const v = value.trim().toLowerCase();
   return (
@@ -287,13 +300,74 @@ export function evaluateInstallerSecurity(smithRoot: string): InstallerSecurityR
   }
 
   const mcpToken = (vars.MCP_INDEX_API_TOKEN ?? "").trim();
-  if (mcpToken.length < 24) {
+  if (looksLikeWeakToken(mcpToken, 24)) {
     warnings.push({
       id: "weak-mcp-index-token",
       message:
         "MCP_INDEX_API_TOKEN is missing or too short; MCP index APIs may be unauthenticated or weakly protected.",
       recommendation:
         "Set MCP_INDEX_API_TOKEN to a long random secret (at least 24 characters).",
+    });
+  }
+
+  const mcpSidecarToken = (vars.MCP_SIDECAR_API_TOKEN ?? "").trim();
+  if (looksLikeWeakToken(mcpSidecarToken, 24)) {
+    warnings.push({
+      id: "weak-mcp-sidecar-token",
+      message:
+        "MCP_SIDECAR_API_TOKEN is missing or too short; MCP sidecar APIs may be unauthenticated or weakly protected.",
+      recommendation:
+        "Set MCP_SIDECAR_API_TOKEN to a long random secret (at least 24 characters).",
+    });
+  }
+
+  const indexAllowUnauth = (vars.MCP_INDEX_ALLOW_UNAUTHENTICATED ?? "")
+    .trim()
+    .toLowerCase();
+  if (indexAllowUnauth === "true" || indexAllowUnauth === "1") {
+    warnings.push({
+      id: "mcp-index-unauth-enabled",
+      message:
+        "MCP_INDEX_ALLOW_UNAUTHENTICATED is enabled; mcp-index APIs can be called without a token.",
+      recommendation:
+        "Set MCP_INDEX_ALLOW_UNAUTHENTICATED=false in production and keep MCP_INDEX_API_TOKEN set.",
+    });
+  }
+
+  const sidecarAllowUnauth = (vars.MCP_SIDECAR_ALLOW_UNAUTHENTICATED ?? "")
+    .trim()
+    .toLowerCase();
+  if (sidecarAllowUnauth === "true" || sidecarAllowUnauth === "1") {
+    warnings.push({
+      id: "mcp-sidecar-unauth-enabled",
+      message:
+        "MCP_SIDECAR_ALLOW_UNAUTHENTICATED is enabled; mcp-sidecar APIs can be called without a token.",
+      recommendation:
+        "Set MCP_SIDECAR_ALLOW_UNAUTHENTICATED=false in production and keep MCP_SIDECAR_API_TOKEN set.",
+    });
+  }
+
+  const webhookStrict = (vars.CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS ?? "")
+    .trim()
+    .toLowerCase();
+  if (webhookStrict === "false" || webhookStrict === "0") {
+    warnings.push({
+      id: "chat-webhook-signature-disabled",
+      message:
+        "CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS is disabled; webhook ingress accepts unsigned requests.",
+      recommendation:
+        "Set CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS=true and configure provider secrets/public keys.",
+    });
+  }
+
+  const adminToken = (vars.CHAT_BRIDGE_ADMIN_TOKEN ?? "").trim();
+  if (looksLikeWeakToken(adminToken, 24)) {
+    warnings.push({
+      id: "weak-chat-bridge-admin-token",
+      message:
+        "CHAT_BRIDGE_ADMIN_TOKEN is missing or too short; pairing admin endpoint protection may be weak.",
+      recommendation:
+        "Set CHAT_BRIDGE_ADMIN_TOKEN to a long random secret (at least 24 characters).",
     });
   }
 

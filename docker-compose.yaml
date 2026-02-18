@@ -254,6 +254,9 @@ services:
     hostname: mcp-postgres
     expose:
       - "9100"
+    environment:
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -261,7 +264,7 @@ services:
       - smith
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health || exit 1"]
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -276,6 +279,8 @@ services:
       - "9100"
     environment:
       - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -283,7 +288,7 @@ services:
       - smith
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health || exit 1"]
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -299,6 +304,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith
       - NATS_URL=nats://nats:4222
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -308,7 +315,7 @@ services:
       - smith
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9100/health || exit 1"]
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -328,6 +335,8 @@ services:
       - MCP_INDEX_POLL_INTERVAL=30
       - MCP_INDEX_BASE_URL=http://localhost:9200
       - MCP_INDEX_API_TOKEN=${MCP_INDEX_API_TOKEN:-}
+      - MCP_INDEX_UPSTREAM_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_INDEX_ALLOW_UNAUTHENTICATED=${MCP_INDEX_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-postgres:
         condition: service_started
@@ -339,7 +348,7 @@ services:
       - smith
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9200/health || exit 1"]
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_INDEX_API_TOKEN}\" -qO- http://127.0.0.1:9200/health || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5

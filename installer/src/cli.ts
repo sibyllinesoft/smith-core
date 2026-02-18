@@ -3,6 +3,7 @@
 import { copyFileSync, existsSync, readFileSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
 import { execFileSync } from "child_process";
+import { randomBytes } from "crypto";
 import { createInstallerSession } from "./agents.js";
 import { parseArgs, findSmithRoot, evaluateInstallerSecurity } from "./lib.js";
 import type { CliArgs } from "./lib.js";
@@ -123,6 +124,85 @@ function ensureMacOsGondolinDefaults(smithRoot: string): void {
   console.log(
     "[installer] macOS detected: enabled persistent VM pool and Gondolin defaults in .env"
   );
+}
+
+function isLikelyPlaceholderSecret(value: string, minLength = 24): boolean {
+  const normalized = value.trim();
+  const lower = normalized.toLowerCase();
+  if (normalized.length < minLength) return true;
+  if (
+    lower.startsWith("change-me") ||
+    lower.startsWith("changeme") ||
+    lower.startsWith("replace-with-")
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function generateHexSecret(bytes = 24): string {
+  return randomBytes(bytes).toString("hex");
+}
+
+function ensureSecurityDefaults(smithRoot: string): void {
+  const envPath = ensureEnvFile(smithRoot);
+  if (!envPath) return;
+
+  const vars = parseEnvFile(envPath);
+  const generated: string[] = [];
+  const configured: string[] = [];
+
+  const ensureToken = (
+    key: string,
+    bytes = 24,
+    minLength = 24
+  ): void => {
+    const current = (vars[key] ?? "").trim();
+    if (isLikelyPlaceholderSecret(current, minLength)) {
+      const value = generateHexSecret(bytes);
+      upsertEnvValue(envPath, key, value);
+      vars[key] = value;
+      generated.push(key);
+    }
+  };
+
+  const ensureValue = (key: string, value: string): void => {
+    const current = (vars[key] ?? "").trim();
+    if (current.length === 0) {
+      upsertEnvValue(envPath, key, value);
+      vars[key] = value;
+      configured.push(key);
+    }
+  };
+
+  // MCP index / sidecar API hardening
+  ensureToken("MCP_INDEX_API_TOKEN", 24, 24);
+  ensureToken("MCP_SIDECAR_API_TOKEN", 24, 24);
+  ensureValue("MCP_INDEX_ALLOW_UNAUTHENTICATED", "false");
+  ensureValue("MCP_SIDECAR_ALLOW_UNAUTHENTICATED", "false");
+
+  // Chat webhook hardening defaults
+  ensureValue("CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS", "true");
+  ensureValue("CHAT_BRIDGE_GITHUB_INGEST_SUBJECT", "smith.orch.ingest.github");
+  ensureToken("CHAT_BRIDGE_ADMIN_TOKEN", 24, 24);
+  ensureToken("CHAT_BRIDGE_GITHUB_WEBHOOK_SECRET", 24, 24);
+  ensureToken("CHAT_BRIDGE_TELEGRAM_WEBHOOK_SECRET", 16, 20);
+  ensureToken("CHAT_BRIDGE_WHATSAPP_VERIFY_TOKEN", 16, 20);
+  ensureToken("CHAT_BRIDGE_WHATSAPP_APP_SECRET", 24, 24);
+
+  if (generated.length > 0 || configured.length > 0) {
+    const details = [
+      generated.length > 0
+        ? `generated secrets: ${generated.join(", ")}`
+        : null,
+      configured.length > 0
+        ? `configured defaults: ${configured.join(", ")}`
+        : null,
+    ]
+      .filter(Boolean)
+      .join("; ");
+    console.log(`[installer] Applied security defaults in .env (${details})`);
+  }
 }
 
 function runOptionalTunnelE2E(smithRoot: string): void {
@@ -306,6 +386,7 @@ async function main(): Promise<void> {
   }
 
   ensureEnvFile(smithRoot);
+  ensureSecurityDefaults(smithRoot);
   ensureMacOsGondolinDefaults(smithRoot);
 
   const securityReport = evaluateInstallerSecurity(smithRoot);

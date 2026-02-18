@@ -113,9 +113,29 @@ pub struct Cli {
     #[arg(long, env = "CHAT_BRIDGE_WEBHOOK_PORT", default_value_t = 8092)]
     webhook_port: u16,
 
+    /// Require authenticated/signed webhook requests (recommended for production)
+    #[arg(
+        long,
+        env = "CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS",
+        default_value_t = true
+    )]
+    require_signed_webhooks: bool,
+
+    /// Telegram webhook secret token expected in X-Telegram-Bot-Api-Secret-Token
+    #[arg(long, env = "CHAT_BRIDGE_TELEGRAM_WEBHOOK_SECRET")]
+    telegram_webhook_secret: Option<String>,
+
+    /// Discord interactions public key (hex) for X-Signature-Ed25519 verification
+    #[arg(long, env = "CHAT_BRIDGE_DISCORD_PUBLIC_KEY")]
+    discord_public_key: Option<String>,
+
     /// WhatsApp webhook verify token (for GET verification handshake)
     #[arg(long, env = "CHAT_BRIDGE_WHATSAPP_VERIFY_TOKEN")]
     whatsapp_verify_token: Option<String>,
+
+    /// WhatsApp app secret for X-Hub-Signature-256 validation
+    #[arg(long, env = "CHAT_BRIDGE_WHATSAPP_APP_SECRET")]
+    whatsapp_app_secret: Option<String>,
 
     /// GitHub webhook secret for validating X-Hub-Signature-256
     #[arg(long, env = "CHAT_BRIDGE_GITHUB_WEBHOOK_SECRET")]
@@ -270,7 +290,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     {
         let webhook_state = Arc::new(crate::webhook::WebhookState {
             nats: client.clone(),
+            require_signed_webhooks: cli.require_signed_webhooks,
+            telegram_webhook_secret: cli.telegram_webhook_secret.clone(),
+            discord_public_key: cli.discord_public_key.clone(),
             whatsapp_verify_token: cli.whatsapp_verify_token.clone(),
+            whatsapp_app_secret: cli.whatsapp_app_secret.clone(),
             github_webhook_secret: cli.github_webhook_secret.clone(),
             github_ingest_subject: cli.github_ingest_subject.clone(),
             pairing_store: Arc::clone(&state.pairing_store),

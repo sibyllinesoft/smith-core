@@ -53,6 +53,14 @@ struct Cli {
     /// Optional API token for protecting index APIs (Authorization: Bearer <token>)
     #[arg(long, env = "MCP_INDEX_API_TOKEN")]
     api_token: Option<String>,
+
+    /// API token used by mcp-index when calling upstream mcp-sidecar instances
+    #[arg(long, env = "MCP_INDEX_UPSTREAM_API_TOKEN")]
+    upstream_api_token: Option<String>,
+
+    /// Allow unauthenticated public API access (development only)
+    #[arg(long, env = "MCP_INDEX_ALLOW_UNAUTHENTICATED", default_value_t = false)]
+    allow_unauthenticated: bool,
 }
 
 #[tokio::main]
@@ -81,16 +89,26 @@ async fn main() -> Result<()> {
 
     let oauth_state = Arc::new(OAuthState::new(providers));
 
+    let api_token = cli.api_token.filter(|v| !v.trim().is_empty());
+    let upstream_api_token = cli.upstream_api_token.filter(|v| !v.trim().is_empty());
+
+    if api_token.is_none() && !cli.allow_unauthenticated {
+        bail!("MCP_INDEX_API_TOKEN is required unless MCP_INDEX_ALLOW_UNAUTHENTICATED=true");
+    }
+    if api_token.is_none() {
+        tracing::warn!(
+            "mcp-index is running without API auth; set MCP_INDEX_API_TOKEN to secure APIs"
+        );
+    }
+
     tracing::info!(
         port = cli.port,
         upstreams = upstreams.len(),
         poll_interval = cli.poll_interval,
         oauth_providers = oauth_state.providers.len(),
-        api_token_enabled = cli
-            .api_token
-            .as_ref()
-            .map(|s| !s.is_empty())
-            .unwrap_or(false),
+        api_token_enabled = api_token.is_some(),
+        upstream_api_token_enabled = upstream_api_token.is_some(),
+        allow_unauthenticated = cli.allow_unauthenticated,
         "starting mcp-index"
     );
 
@@ -105,7 +123,8 @@ async fn main() -> Result<()> {
         client,
         oauth: oauth_state,
         base_url: cli.base_url.trim_end_matches('/').to_string(),
-        api_token: cli.api_token.filter(|v| !v.trim().is_empty()),
+        api_token,
+        upstream_api_token,
     });
 
     spawn_poller(Arc::clone(&state), Duration::from_secs(cli.poll_interval));

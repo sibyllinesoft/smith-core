@@ -42,6 +42,14 @@ struct Cli {
     #[arg(long, env = "MCP_SIDECAR_API_TOKEN")]
     api_token: Option<String>,
 
+    /// Allow unauthenticated sidecar API access (development only)
+    #[arg(
+        long,
+        env = "MCP_SIDECAR_ALLOW_UNAUTHENTICATED",
+        default_value_t = false
+    )]
+    allow_unauthenticated: bool,
+
     /// The MCP server command and arguments (everything after --)
     #[arg(trailing_var_arg = true, required = true)]
     command: Vec<String>,
@@ -76,6 +84,16 @@ async fn main() -> Result<()> {
 
     tracing::info!(service_name, port = cli.port, "starting mcp-sidecar");
 
+    let api_token = cli.api_token.filter(|v| !v.trim().is_empty());
+    if api_token.is_none() && !cli.allow_unauthenticated {
+        bail!("MCP_SIDECAR_API_TOKEN is required unless MCP_SIDECAR_ALLOW_UNAUTHENTICATED=true");
+    }
+    if api_token.is_none() {
+        tracing::warn!(
+            "mcp-sidecar is running without API auth; set MCP_SIDECAR_API_TOKEN to secure APIs"
+        );
+    }
+
     // Load middleware config if provided
     let mw = match &cli.middleware {
         Some(path) => {
@@ -102,7 +120,7 @@ async fn main() -> Result<()> {
         config: spawn_config,
         middleware: RwLock::new(mw),
         middleware_path: cli.middleware,
-        api_token: cli.api_token.filter(|v| !v.trim().is_empty()),
+        api_token,
     });
 
     // Build HTTP router

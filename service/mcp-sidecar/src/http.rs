@@ -59,13 +59,18 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn health(State(state): State<SharedState>) -> Json<Value> {
+async fn health(
+    State(state): State<SharedState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, AppError> {
+    require_api_token(&state, &headers)?;
+
     let client = state.client.read().await;
-    Json(json!({
+    Ok(Json(json!({
         "status": "ok",
         "server_info": client.server_info,
         "tools_count": client.tools.len(),
-    }))
+    })))
 }
 
 async fn list_tools(

@@ -80,6 +80,8 @@ The `smith-chat-daemon` also exposes a shared webhook ingress service (default
 `CHAT_BRIDGE_WEBHOOK_PORT=8092`) including `/webhook/github`, which validates
 `X-Hub-Signature-256` when `CHAT_BRIDGE_GITHUB_WEBHOOK_SECRET` is set and
 publishes normalized orchestration events to `smith.orch.ingest.github`.
+With `CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS=true` (default), unsigned webhook
+requests are rejected.
 
 ## Architecture
 
@@ -235,6 +237,7 @@ NATS_URL=nats://localhost:4222
 SMITH_DATABASE_URL=postgresql://smith:smith-dev@localhost:5432/smith
 AGENTD_CONFIG=agent/agentd/config/agentd.toml
 MCP_INDEX_API_TOKEN=replace-with-a-long-random-secret
+MCP_SIDECAR_API_TOKEN=replace-with-a-long-random-secret
 # Optional persistent VM overrides
 SMITH_EXECUTOR_VM_POOL_ENABLED=true
 SMITH_EXECUTOR_VM_METHOD=gondolin
@@ -246,7 +249,7 @@ SLACK_BOT_TOKEN=
 SLACK_APP_TOKEN=
 ```
 
-For non-development deployments, rotate all default passwords in `.env` and set a non-empty `MCP_INDEX_API_TOKEN`.
+For non-development deployments, rotate all default passwords in `.env` and set strong `MCP_INDEX_API_TOKEN` and `MCP_SIDECAR_API_TOKEN` values.
 When `SMITH_EXECUTOR_VM_POOL_ENABLED=true` (or `executor.vm_pool.enabled=true` in `agentd.toml`), VM execution defaults to `gondolin` on macOS and `host` on other platforms (override with `SMITH_EXECUTOR_VM_METHOD`).
 
 ## Security defaults
@@ -258,7 +261,8 @@ Smith Core is designed for single-user, self-hosted deployments. Defaults are se
 - **Policy enforcement** — OPA policies govern what the agent can do
 - **mTLS gateway** — Envoy terminates TLS and forwards only explicit routes
 - **Loopback-bound host ports** — infrastructure ports bind to `127.0.0.1` by default
-- **Optional API token guard** — set `MCP_INDEX_API_TOKEN` to require bearer auth for MCP index APIs
+- **Token-enforced MCP APIs** — `mcp-index` and `mcp-sidecar` require API tokens by default (including `/health`; opt-out only via explicit `*_ALLOW_UNAUTHENTICATED=true`)
+- **Signed webhook enforcement** — `smith-chat` webhook ingress rejects unsigned requests by default (`CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS=true`)
 - **Config-backed agentd startup** — `just run-agentd` uses committed config; insecure fallback is now dev-only via `just run-agentd-dev`
 - **No default policy bundles for multi-user** — that's a [paid offering](https://smithcore.dev)
 
