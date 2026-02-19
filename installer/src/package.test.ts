@@ -42,9 +42,9 @@ describe("package.json manifest", () => {
     expect(pkg.type).toBe("module");
   });
 
-  it("engines requires node >= 22", () => {
+  it("engines requires node >= 20", () => {
     expect(pkg.engines).toBeDefined();
-    expect(pkg.engines.node).toMatch(/>=\s*22/);
+    expect(pkg.engines.node).toMatch(/>=\s*20/);
   });
 });
 
