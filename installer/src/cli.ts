@@ -5,7 +5,8 @@ import { resolve, join } from "path";
 import { execFileSync } from "child_process";
 import { pipeline } from "stream/promises";
 import { randomBytes } from "crypto";
-import { tmpdir } from "os";
+import { tmpdir, homedir } from "os";
+import { createInterface } from "readline/promises";
 import { createInstallerSession } from "./agents.js";
 import { parseArgs, findSmithRoot, evaluateInstallerSecurity, readSmithConfig, writeSmithConfig } from "./lib.js";
 import type { CliArgs } from "./lib.js";
@@ -65,6 +66,62 @@ async function downloadRepo(repo: string, tag: string): Promise<string> {
 
   console.log(`[installer] Extracted ${repo}@${tag} to ${target}`);
   return target;
+}
+
+function providerEnvKey(provider: string): string {
+  const map: Record<string, string> = {
+    anthropic: "ANTHROPIC_API_KEY",
+    openai: "OPENAI_API_KEY",
+    google: "GEMINI_API_KEY",
+    "azure-openai": "AZURE_OPENAI_API_KEY",
+    groq: "GROQ_API_KEY",
+  };
+  return map[provider] ?? `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+}
+
+async function ensureProviderApiKey(provider: string): Promise<void> {
+  const envKey = providerEnvKey(provider);
+  if (process.env[envKey]) return;
+
+  // If pi auth storage exists the user has logged in before
+  const authPath = join(homedir(), ".pi", "agent", "auth.json");
+  if (existsSync(authPath)) return;
+
+  console.log(`
+┌─────────────────────────────────────────────────────────┐
+│  Smith Core Installer                                   │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  This installer uses an AI agent to guide you through   │
+│  setting up your Smith Core development environment.    │
+│                                                         │
+│  The agent will:                                        │
+│    · Configure infrastructure (Docker, databases)       │
+│    · Build Rust and Node workspaces                     │
+│    · Set up security defaults and certificates          │
+│    · Verify your installation                           │
+│                                                         │
+│  An API key for your AI provider is required.           │
+└─────────────────────────────────────────────────────────┘
+`);
+
+  if (!process.stdin.isTTY) {
+    console.error(`Error: No API key found. Set ${envKey} in your environment.`);
+    process.exit(1);
+  }
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const key = await rl.question(`Enter your ${provider} API key (${envKey}): `);
+    if (!key.trim()) {
+      console.error("No API key provided. Exiting.");
+      process.exit(1);
+    }
+    process.env[envKey] = key.trim();
+    console.log(`[installer] ${envKey} set for this session.\n`);
+  } finally {
+    rl.close();
+  }
 }
 
 function runCommand(cwd: string, spec: CommandSpec): void {
@@ -462,6 +519,9 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Suppress pi-coding-agent update check (forked packages)
+  process.env.PI_SKIP_VERSION_CHECK = "1";
+
   if (args.help) {
     printHelp();
     process.exit(0);
@@ -515,7 +575,9 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Interactive mode: create pi-agent session
+  // Interactive mode: ensure API key is available, then create pi-agent session
+  await ensureProviderApiKey(args.provider);
+
   const { InteractiveMode, runPrintMode } = await import(
     "@mariozechner/pi-coding-agent"
   );
