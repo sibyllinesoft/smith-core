@@ -1,6 +1,6 @@
 {
   "name": "@smith/session-recorder",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "NATS subscriber that records chat sessions to PostgreSQL from the telemetry stream",
   "private": true,
   "license": "MIT",

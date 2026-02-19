@@ -155,7 +155,8 @@ services:
 
   # ── Policy Engine ───────────────────────────────────────────────────────
   opa-management:
-    image: openpolicyagent/opa:latest
+    image: openpolicyagent/opa:latest-envoy
+    platform: linux/amd64
     container_name: smith-opa
     hostname: opa-management
     command:
