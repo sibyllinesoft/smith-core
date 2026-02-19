@@ -19,14 +19,28 @@ const DEFAULT_REPO = "sibyllinesoft/smith-core";
 
 async function resolveLatestTag(repo: string): Promise<string> {
   const resp = await fetch(
-    `https://api.github.com/repos/${repo}/releases/latest`,
+    `https://api.github.com/repos/${repo}/tags?per_page=100`,
     { headers: { "User-Agent": "smith-installer" } }
   );
   if (!resp.ok) {
-    throw new Error(`Failed to fetch latest release from ${repo}: ${resp.status}`);
+    throw new Error(`Failed to fetch tags from ${repo}: ${resp.status}`);
   }
-  const data = (await resp.json()) as { tag_name: string };
-  return data.tag_name;
+  const tags = (await resp.json()) as Array<{ name: string }>;
+  const semverTags = tags
+    .map((t) => t.name)
+    .filter((name) => /^v?\d+\.\d+\.\d+$/.test(name));
+  if (semverTags.length === 0) {
+    throw new Error(`No semver tags found in ${repo}`);
+  }
+  semverTags.sort((a, b) => {
+    const pa = a.replace(/^v/, "").split(".").map(Number);
+    const pb = b.replace(/^v/, "").split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+      if (pa[i]! !== pb[i]!) return pb[i]! - pa[i]!;
+    }
+    return 0;
+  });
+  return semverTags[0]!;
 }
 
 async function downloadRepo(repo: string, tag: string): Promise<string> {
@@ -135,6 +149,15 @@ function upsertEnvValue(path: string, key: string, value: string): void {
   writeFileSync(path, `${updated.join("\n")}\n`);
 }
 
+function isCommandAvailable(cmd: string): boolean {
+  try {
+    execFileSync(cmd, ["--version"], { stdio: "ignore", env: process.env });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function ensureMacOsGondolinDefaults(smithRoot: string): void {
   if (process.platform !== "darwin") {
     return;
@@ -148,12 +171,46 @@ function ensureMacOsGondolinDefaults(smithRoot: string): void {
     return;
   }
 
+  // Check if gondolin is already available
+  let gondolinAvailable = false;
   try {
     execFileSync("gondolin", ["help"], { stdio: "ignore", env: process.env });
+    gondolinAvailable = true;
   } catch {
-    throw new Error(
-      "macOS setup requires 'gondolin' for sandboxed VM execution. Install Gondolin and rerun the installer."
-    );
+    // Not available — try to install
+  }
+
+  if (!gondolinAvailable) {
+    console.log("[installer] Gondolin not found. Attempting to install...");
+
+    // Ensure qemu prerequisite
+    if (!isCommandAvailable("qemu-system-aarch64")) {
+      console.log("[installer] Installing qemu via Homebrew...");
+      try {
+        execFileSync("brew", ["install", "qemu"], { stdio: "inherit", env: process.env });
+      } catch {
+        console.warn(
+          "[installer] Could not install qemu. Install it manually: brew install qemu\n" +
+          "[installer] Skipping Gondolin setup — the agent can configure it later."
+        );
+        return;
+      }
+    }
+
+    // Install gondolin
+    try {
+      console.log("[installer] Installing @earendil-works/gondolin globally...");
+      execFileSync("npm", ["install", "-g", "@earendil-works/gondolin"], {
+        stdio: "inherit",
+        env: process.env,
+      });
+    } catch {
+      console.warn(
+        "[installer] Could not install Gondolin. Install it manually: npm install -g @earendil-works/gondolin\n" +
+        "[installer] Skipping Gondolin setup — the agent can configure it later."
+      );
+      return;
+    }
   }
 
   upsertEnvValue(envPath, "SMITH_EXECUTOR_VM_POOL_ENABLED", "true");
