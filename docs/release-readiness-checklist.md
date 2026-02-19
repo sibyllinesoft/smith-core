@@ -5,13 +5,13 @@ Scope: single-user installation on a private network / VPN.
 ## Must Pass Before Tagging
 
 - [ ] `cargo check --workspace`
-- [ ] `cargo check --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd`
+- [ ] `cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd`
 - [ ] `npm run build --workspaces --if-present`
 - [ ] `npm run test --workspace installer`
 - [ ] `docker compose config`
 - [ ] Envoy config validates (`envoy --mode validate -c /etc/envoy/envoy.yaml`)
 - [ ] `bash infra/envoy/certs/generate-certs.sh` succeeds
-- [ ] `just run-agentd` starts with committed config (`agent/agentd/config/agentd.toml`)
+- [ ] `just run-agentd` starts with committed config (`${AGENTD_ROOT}/config/agentd.toml`)
 
 ## Security Baseline (Single-User Private Network)
 
@@ -24,7 +24,7 @@ Scope: single-user installation on a private network / VPN.
 - [ ] Keep `CHAT_BRIDGE_DM_POLICY=pairing` unless explicitly accepting open DMs
 - [ ] Use a private network path (VPN/tunnel) for remote access, such as Cloudflare Tunnel or Tailscale
 - [ ] Do not use `SMITH_EXECUTOR_ALLOW_INSECURE_FALLBACK=1` in normal runtime
-- [ ] Keep `strict_sandbox=true` in `agent/agentd/config/agentd.toml`
+- [ ] Keep `strict_sandbox=true` in `${AGENTD_ROOT}/config/agentd.toml`
 - [ ] Confirm `AGENTD_CAPABILITY_DIGEST` is intentionally chosen for your bundle policy
 - [ ] Keep agentd metrics/health listeners on loopback only (`127.0.0.1`)
 

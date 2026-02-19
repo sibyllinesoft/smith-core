@@ -22,7 +22,8 @@ Run these before opening a pull request:
 
 ```bash
 cargo check --workspace
-cargo check --manifest-path agent/agentd/Cargo.toml
+# agentd lives in a separate repo (set AGENTD_ROOT in .env):
+cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml
 npm run build --workspaces --if-present
 cd installer && npm test
 ```

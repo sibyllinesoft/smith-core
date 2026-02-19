@@ -6,11 +6,10 @@ members = [
     "service/smith-chat",
     "service/admission",
 ]
-# agent/agentd is an independent workspace — build via `just build-agentd`
-exclude = ["agent/agentd"]
+# agentd lives in a separate repo — set AGENTD_ROOT in .env and use `just build-agentd`
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 authors = ["Smith Team"]
 license = "MIT"

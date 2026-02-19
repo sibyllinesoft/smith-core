@@ -418,16 +418,24 @@ function runNonInteractiveBootstrap(
 ): void {
   const normalizedStep = step?.toLowerCase() ?? "all";
 
+  // Resolve agentd repo path from env or .env file
+  const envPath = join(smithRoot, ".env");
+  const envVars = existsSync(envPath) ? parseEnvFile(envPath) : {};
+  const agentdRoot = process.env.AGENTD_ROOT || envVars.AGENTD_ROOT || null;
+  if (!agentdRoot) {
+    console.warn("[installer] AGENTD_ROOT not set in .env — agentd build/check steps will be skipped");
+  }
+
   const plans: Record<string, CommandSpec[]> = {
     all: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
       { command: "docker", args: ["compose", "ps"] },
       { command: "cargo", args: ["build", "--workspace"] },
-      { command: "cargo", args: ["build", "--manifest-path", "agent/agentd/Cargo.toml", "--features", "grpc", "--bin", "agentd"] },
+      ...(agentdRoot ? [{ command: "cargo", args: ["build", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["install"] },
       { command: "cargo", args: ["check", "--workspace"] },
-      { command: "cargo", args: ["check", "--manifest-path", "agent/agentd/Cargo.toml", "--features", "grpc", "--bin", "agentd"] },
+      ...(agentdRoot ? [{ command: "cargo", args: ["check", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     infra: [
@@ -437,14 +445,14 @@ function runNonInteractiveBootstrap(
     ],
     build: [
       { command: "cargo", args: ["build", "--workspace"] },
-      { command: "cargo", args: ["build", "--manifest-path", "agent/agentd/Cargo.toml", "--features", "grpc", "--bin", "agentd"] },
+      ...(agentdRoot ? [{ command: "cargo", args: ["build", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
     ],
     npm: [
       { command: "npm", args: ["install"] },
     ],
     verify: [
       { command: "cargo", args: ["check", "--workspace"] },
-      { command: "cargo", args: ["check", "--manifest-path", "agent/agentd/Cargo.toml", "--features", "grpc", "--bin", "agentd"] },
+      ...(agentdRoot ? [{ command: "cargo", args: ["check", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "25": [
@@ -457,11 +465,11 @@ function runNonInteractiveBootstrap(
     ],
     "40": [
       { command: "cargo", args: ["build", "--workspace"] },
-      { command: "cargo", args: ["build", "--manifest-path", "agent/agentd/Cargo.toml", "--features", "grpc", "--bin", "agentd"] },
+      ...(agentdRoot ? [{ command: "cargo", args: ["build", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
     ],
     "90": [
       { command: "cargo", args: ["check", "--workspace"] },
-      { command: "cargo", args: ["check", "--manifest-path", "agent/agentd/Cargo.toml", "--features", "grpc", "--bin", "agentd"] },
+      ...(agentdRoot ? [{ command: "cargo", args: ["check", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "configure-policy": [

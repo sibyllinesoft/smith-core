@@ -209,7 +209,6 @@ For Cloudflare/Tailscale tunnel setup and e2e checks, use
 ```
 smith-core/
 ├── agent/
-│   ├── agentd/          # Sandboxed execution daemon (independent Rust workspace)
 │   └── pi-bridge/       # AI reasoning bridge (TypeScript)
 ├── service/
 │   ├── mcp-sidecar/        # MCP stdio-to-HTTP bridge
@@ -235,7 +234,8 @@ Services are configured through environment variables. Copy `.env.example` to `.
 # Core
 NATS_URL=nats://localhost:4222
 SMITH_DATABASE_URL=postgresql://smith:smith-dev@localhost:5432/smith
-AGENTD_CONFIG=agent/agentd/config/agentd.toml
+AGENTD_ROOT=../agentd  # path to agentd repo checkout
+AGENTD_CONFIG=${AGENTD_ROOT}/config/agentd.toml
 MCP_INDEX_API_TOKEN=replace-with-a-long-random-secret
 MCP_SIDECAR_API_TOKEN=replace-with-a-long-random-secret
 # Optional persistent VM overrides

@@ -6,8 +6,8 @@ description: Start agentd with committed baseline config and verify process heal
 Run:
 
 ```bash
-cargo run --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd -- run \
-  --config ${AGENTD_CONFIG:-agent/agentd/config/agentd.toml} \
+cargo run --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd -- run \
+  --config ${AGENTD_CONFIG:-${AGENTD_ROOT}/config/agentd.toml} \
   --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
 ```
 
@@ -51,5 +51,14 @@ This skill launches `agentd` directly from source using the valid CLI shape.
 
 ## Notes
 
-Use a separate terminal session so logs remain visible during installer verification.  
+Use a separate terminal session so logs remain visible during installer verification.
 For development-only fallback behavior, run the same command with `SMITH_EXECUTOR_ALLOW_INSECURE_FALLBACK=1 SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1`.
+
+### macOS / non-Linux platforms
+
+agentd auto-detects the platform at startup. On macOS (and other non-Linux hosts):
+- `--isolation auto` (the default) resolves to `gondolin`
+- Gondolin provides VM-level isolation; Linux kernel features (landlock, seccomp) are skipped
+- No extra flags are needed
+
+To override, pass `--isolation <backend>` explicitly (e.g. `--isolation host-direct` to skip Gondolin).

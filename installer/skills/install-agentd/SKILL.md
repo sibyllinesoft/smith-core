@@ -6,14 +6,14 @@ description: Build and validate the agentd workspace from source
 Run:
 
 ```bash
-cargo build --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd
+cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 ```
 
 ## What It Does
 
 This skill prepares the `agentd` binary from source.
 
-1. Compiles `agent/agentd` and internal crates.
+1. Compiles `${AGENTD_ROOT}` and internal crates.
 2. Ensures gRPC support is included (`--features grpc`).
 3. Produces a runnable `agentd` binary for Envoy transcoding flows.
 4. Validates crate path wiring in the extracted repo.
@@ -25,12 +25,12 @@ This skill prepares the `agentd` binary from source.
 
 ## Expected Output
 
-`cargo build --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd` finishes successfully.
+`cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd` finishes successfully.
 
 ## Reading Results
 
 - Compile errors indicate source/API drift in `agentd` components.
-- Successful build enables `cargo run --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd -- run ...`.
+- Successful build enables `cargo run --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd -- run ...`.
 
 ## Common Failures
 

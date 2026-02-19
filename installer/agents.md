@@ -56,14 +56,14 @@ docker compose ps
 
 # build
 cargo build --workspace
-cargo build --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd
+cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 
 # npm
 npm install
 
 # verify
 cargo check --workspace
-cargo check --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd
+cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 npm run build --workspaces --if-present
 
 # optional tunnel e2e checks when configured in .env

@@ -7,7 +7,7 @@ Run:
 
 ```bash
 cargo check --workspace
-cargo check --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd
+cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 npm run build --workspaces --if-present
 docker compose ps
 ```

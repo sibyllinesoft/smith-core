@@ -64,13 +64,13 @@ build:
 build-release:
     cargo build --workspace --release
 
-# Build agentd (independent workspace)
+# Build agentd (independent workspace — requires AGENTD_ROOT in .env)
 build-agentd:
-    cargo build --manifest-path agent/agentd/Cargo.toml
+    cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml
 
 # Build agentd in release mode
 build-agentd-release:
-    cargo build --manifest-path agent/agentd/Cargo.toml --release
+    cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --release
 
 # Build everything (workspace + agentd)
 build-all: build build-agentd
@@ -81,7 +81,7 @@ test:
 
 # Run agentd tests
 test-agentd:
-    cargo test --manifest-path agent/agentd/Cargo.toml
+    cargo test --manifest-path ${AGENTD_ROOT}/Cargo.toml
 
 # Run all tests (workspace + agentd)
 test-all: test test-agentd
@@ -112,11 +112,11 @@ run-mcp-index:
 
 # Run agentd
 run-agentd:
-    cargo run --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd -- run --config ${AGENTD_CONFIG:-agent/agentd/config/agentd.toml} --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    cargo run --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd -- run --config ${AGENTD_CONFIG:-${AGENTD_ROOT}/config/agentd.toml} --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
 
 # Run agentd with fallback config enabled (development-only)
 run-agentd-dev:
-    SMITH_EXECUTOR_ALLOW_INSECURE_FALLBACK=1 SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1 cargo run --manifest-path agent/agentd/Cargo.toml --features grpc --bin agentd -- run --config ${AGENTD_CONFIG:-agent/agentd/config/agentd.toml} --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+    SMITH_EXECUTOR_ALLOW_INSECURE_FALLBACK=1 SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1 cargo run --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd -- run --config ${AGENTD_CONFIG:-${AGENTD_ROOT}/config/agentd.toml} --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
 
 # Run the pi-bridge agent
 run-agent:

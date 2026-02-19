@@ -11,7 +11,6 @@ describe("smith-core bootstrap assets", () => {
     "docker-compose.yaml",
     "Cargo.toml",
     "package.json",
-    "agent/agentd/Cargo.toml",
     "installer/agents.md",
   ];
 

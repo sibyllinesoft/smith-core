@@ -17,8 +17,7 @@ jobs:
       - name: Check root workspace
         run: cargo check --workspace
 
-      - name: Check agentd workspace
-        run: cargo check --manifest-path agent/agentd/Cargo.toml
+      # agentd lives in a separate repo; its CI runs there.
 
   node:
     runs-on: ubuntu-latest
