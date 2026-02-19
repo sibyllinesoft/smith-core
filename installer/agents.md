@@ -56,15 +56,15 @@ docker compose ps
 
 # build
 cargo build --workspace
-cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 
 # npm
 npm install
+npm install -g @sibyllinesoft/agentd
 
 # verify
 cargo check --workspace
-cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 npm run build --workspaces --if-present
+agentd --version
 
 # optional tunnel e2e checks when configured in .env
 bash scripts/tunnel-e2e.sh cloudflare

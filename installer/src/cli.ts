@@ -215,6 +215,46 @@ function isCommandAvailable(cmd: string): boolean {
   }
 }
 
+function runPreflightChecks(): void {
+  const errors: string[] = [];
+
+  // Check Docker
+  if (!isCommandAvailable("docker")) {
+    errors.push("Docker is not installed or not in PATH. Install from https://docs.docker.com/get-docker/");
+  } else {
+    try {
+      execFileSync("docker", ["info"], { stdio: "ignore", env: process.env });
+    } catch {
+      errors.push("Docker daemon is not running. Start Docker Desktop or the Docker service.");
+    }
+  }
+
+  // Check docker compose
+  try {
+    execFileSync("docker", ["compose", "version"], { stdio: "ignore", env: process.env });
+  } catch {
+    errors.push("'docker compose' not available. Install Docker Compose v2: https://docs.docker.com/compose/install/");
+  }
+
+  // Check Node.js version (need >=20 for fetch, crypto, etc.)
+  const nodeVersion = process.versions.node;
+  const major = parseInt(nodeVersion.split(".")[0]!, 10);
+  if (major < 20) {
+    errors.push(`Node.js ${nodeVersion} detected but >=20 is required. Install via nvm or https://nodejs.org/`);
+  }
+
+  if (errors.length > 0) {
+    console.error("\n[preflight] Missing prerequisites:\n");
+    for (const err of errors) {
+      console.error(`  - ${err}`);
+    }
+    console.error("");
+    process.exit(1);
+  }
+
+  console.log(`[preflight] Docker OK, Node.js ${nodeVersion} OK`);
+}
+
 function ensureMacOsGondolinDefaults(smithRoot: string): void {
   if (process.platform !== "darwin") {
     return;
@@ -418,24 +458,15 @@ function runNonInteractiveBootstrap(
 ): void {
   const normalizedStep = step?.toLowerCase() ?? "all";
 
-  // Resolve agentd repo path from env or .env file
-  const envPath = join(smithRoot, ".env");
-  const envVars = existsSync(envPath) ? parseEnvFile(envPath) : {};
-  const agentdRoot = process.env.AGENTD_ROOT || envVars.AGENTD_ROOT || null;
-  if (!agentdRoot) {
-    console.warn("[installer] AGENTD_ROOT not set in .env — agentd build/check steps will be skipped");
-  }
-
   const plans: Record<string, CommandSpec[]> = {
     all: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
       { command: "docker", args: ["compose", "ps"] },
       { command: "cargo", args: ["build", "--workspace"] },
-      ...(agentdRoot ? [{ command: "cargo", args: ["build", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["install"] },
+      { command: "npm", args: ["install", "-g", "@sibyllinesoft/agentd"] },
       { command: "cargo", args: ["check", "--workspace"] },
-      ...(agentdRoot ? [{ command: "cargo", args: ["check", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     infra: [
@@ -445,14 +476,12 @@ function runNonInteractiveBootstrap(
     ],
     build: [
       { command: "cargo", args: ["build", "--workspace"] },
-      ...(agentdRoot ? [{ command: "cargo", args: ["build", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
     ],
     npm: [
       { command: "npm", args: ["install"] },
     ],
     verify: [
       { command: "cargo", args: ["check", "--workspace"] },
-      ...(agentdRoot ? [{ command: "cargo", args: ["check", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "25": [
@@ -465,11 +494,9 @@ function runNonInteractiveBootstrap(
     ],
     "40": [
       { command: "cargo", args: ["build", "--workspace"] },
-      ...(agentdRoot ? [{ command: "cargo", args: ["build", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
     ],
     "90": [
       { command: "cargo", args: ["check", "--workspace"] },
-      ...(agentdRoot ? [{ command: "cargo", args: ["check", "--manifest-path", join(agentdRoot, "Cargo.toml"), "--features", "grpc", "--bin", "agentd"] }] : []),
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "configure-policy": [
@@ -534,6 +561,8 @@ async function main(): Promise<void> {
     printHelp();
     process.exit(0);
   }
+
+  runPreflightChecks();
 
   // Resolve smith-core location
   const existingConfig = readSmithConfig();

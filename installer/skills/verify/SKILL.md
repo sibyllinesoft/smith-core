@@ -7,8 +7,8 @@ Run:
 
 ```bash
 cargo check --workspace
-cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
 npm run build --workspaces --if-present
+agentd --version
 docker compose ps
 ```
 
@@ -17,7 +17,7 @@ docker compose ps
 This skill validates that core components are buildable and infrastructure is running.
 
 1. Checks Rust root workspace.
-2. Checks `agentd` workspace.
+2. Verifies agentd is installed.
 3. Builds Node workspaces.
 4. Confirms Docker services are active.
 

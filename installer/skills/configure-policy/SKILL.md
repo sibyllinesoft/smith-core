@@ -19,10 +19,10 @@ docker compose exec -T opa-management wget -qO- http://localhost:8181/health
 docker compose exec -T opa-management wget -qO- http://localhost:8181/v1/policies
 
 # Show executor.policy section from agentd config
-grep -A 20 '^\[executor\.policy\]' ${AGENTD_ROOT}/config/agentd.toml || echo "No [executor.policy] section found"
+grep -A 20 '^\[executor\.policy\]' ${AGENTD_CONFIG_DIR:-./agentd}/config/agentd.toml || echo "No [executor.policy] section found"
 
 # List Rego policy files
-ls -la ${AGENTD_ROOT}/policy/*.rego 2>/dev/null || echo "No .rego files found"
+ls -la ${AGENTD_CONFIG_DIR:-./agentd}/policy/*.rego 2>/dev/null || echo "No .rego files found"
 ```
 
 ## What It Does
@@ -39,7 +39,7 @@ Smith Core ships three security profiles:
 
 ### Architecture
 
-- 10 Rego policy files live at `${AGENTD_ROOT}/policy/*.rego`.
+- 10 Rego policy files live at `${AGENTD_CONFIG_DIR:-./agentd}/policy/*.rego`.
 - Policy data is stored in PostgreSQL (`opa_policies` table) and synced to the OPA management server.
 - Sync flow: **PostgreSQL** -> **admission service** -> **OPA server (8181)** -> **Envoy ext_authz (9292)**.
 - Separately, agentd evaluates policies in-process via the `regorus` embedded Rego engine using `[executor.policy]` config in `agentd.toml`.
@@ -61,13 +61,13 @@ docker compose exec -T postgres psql -U smith -d smith -c "UPDATE opa_policies S
 ### Build policy bundle
 
 ```bash
-bash ${AGENTD_ROOT}/scripts/build-policy-bundle.sh
+bash ${AGENTD_CONFIG_DIR:-./agentd}/scripts/build-policy-bundle.sh
 ```
 
 ### Validate Rego files (requires OPA CLI on host)
 
 ```bash
-opa check ${AGENTD_ROOT}/policy/
+opa check ${AGENTD_CONFIG_DIR:-./agentd}/policy/
 ```
 
 ### Force re-sync from PostgreSQL to OPA
@@ -80,13 +80,13 @@ docker compose restart opa-management
 
 - Docker stack running (`docker compose ps` shows `postgres` and `opa-management` healthy).
 - `opa_policies` table populated (happens during initial `start-stack` phase).
-- `${AGENTD_ROOT}/config/agentd.toml` present.
+- `${AGENTD_CONFIG_DIR:-./agentd}/config/agentd.toml` present.
 
 ## Expected Output
 
 - `opa_policies` table lists active policy records with timestamps.
 - OPA health endpoint returns `{"status": "ok"}` or similar.
-- Rego files are listed at `${AGENTD_ROOT}/policy/*.rego`.
+- Rego files are listed at `${AGENTD_CONFIG_DIR:-./agentd}/policy/*.rego`.
 - `[executor.policy]` config section is visible in `agentd.toml`.
 
 ## Common Failures
@@ -96,7 +96,7 @@ docker compose restart opa-management
 | `psql` connection refused | Postgres container not running | `docker compose up -d postgres` |
 | OPA health check fails | `opa-management` container not running | `docker compose up -d opa-management` |
 | Empty `opa_policies` table | Policies not seeded | Re-run `start-stack` skill or seed manually |
-| `regorus` evaluation errors in agentd logs | Rego syntax error in policy files | Run `opa check ${AGENTD_ROOT}/policy/` to validate |
+| `regorus` evaluation errors in agentd logs | Rego syntax error in policy files | Run `opa check ${AGENTD_CONFIG_DIR:-./agentd}/policy/` to validate |
 | Changes not reflected in authorization | Sync lag or stale cache | `docker compose restart opa-management` |
 
 ## Notes

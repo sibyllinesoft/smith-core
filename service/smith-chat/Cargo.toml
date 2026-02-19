@@ -76,7 +76,7 @@ chrono = { workspace = true }
 futures = { workspace = true }
 async-nats = { workspace = true }
 clap = { workspace = true, features = ["derive", "env"] }
-redis = { version = "0.24", features = ["aio", "connection-manager", "tokio-comp"] }
+redis = { version = "0.27", features = ["aio", "connection-manager", "tokio-comp"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "stream", "rustls-tls"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

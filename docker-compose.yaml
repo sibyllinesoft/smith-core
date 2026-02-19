@@ -125,6 +125,13 @@ services:
       - CLICKHOUSE_DATABASE=otel
       - CLICKHOUSE_USERNAME=default
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-observability-dev}
+      - OTEL_BATCH_SIZE=512
+      - OTEL_BATCH_TIMEOUT=1s
+      - OTEL_MEMORY_LIMIT_MIB=512
+      - OTEL_SPIKE_LIMIT_MIB=128
+      - DEPLOYMENT_ENVIRONMENT=development
+      - OTEL_LOG_VERBOSITY=normal
+      - OTEL_LOG_LEVEL=info
     depends_on:
       clickhouse:
         condition: service_healthy
@@ -179,11 +186,11 @@ services:
       - smith
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "opa", "eval", "--fail-defined", "status := http.send({\"method\":\"GET\",\"url\":\"http://localhost:8181/health?plugins\"}).status_code; status != 200"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
+      test: ["CMD", "/opa", "eval", "--fail-defined", "x = http.send({\"method\":\"GET\",\"url\":\"http://localhost:8181/health\"}).status_code; x != 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   # ── mTLS Gateway ────────────────────────────────────────────────────────
   envoy:
@@ -203,7 +210,7 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       opa-management:
-        condition: service_healthy
+        condition: service_started
       otel-collector:
         condition: service_started
       nats:

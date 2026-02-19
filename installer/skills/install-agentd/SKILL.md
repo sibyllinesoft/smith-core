@@ -1,46 +1,43 @@
 ---
-description: Build and validate the agentd workspace from source
+description: Install the agentd binary from npm
 ---
 # Install Agentd
 
 Run:
 
 ```bash
-cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd
+npm install -g @sibyllinesoft/agentd
 ```
 
 ## What It Does
 
-This skill prepares the `agentd` binary from source.
+This skill installs the pre-built `agentd` binary via npm.
 
-1. Compiles `${AGENTD_ROOT}` and internal crates.
-2. Ensures gRPC support is included (`--features grpc`).
-3. Produces a runnable `agentd` binary for Envoy transcoding flows.
-4. Validates crate path wiring in the extracted repo.
+1. Downloads the platform-appropriate binary from the `@sibyllinesoft/agentd` npm package.
+2. Makes the `agentd` command available globally.
+3. Validates installation by checking the binary is on PATH.
 
 ## Prerequisites
 
-- Rust toolchain installed.
-- Cargo dependency resolution functional.
+- Node.js >= 20 and npm installed.
 
 ## Expected Output
 
-`cargo build --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd` finishes successfully.
+`agentd --version` prints a version string.
 
 ## Reading Results
 
-- Compile errors indicate source/API drift in `agentd` components.
-- Successful build enables `cargo run --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd -- run ...`.
+- Install errors indicate npm/network issues.
+- Successful install enables `agentd run ...`.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Dependency fetch failures | Network issue | Retry when registry/network is available |
-| Compile errors | Code mismatch | Fix code and re-run build |
-| Toolchain mismatch | Old Rust version | Update to current stable toolchain |
-| Linker errors | Missing system build deps | Install compiler/linker prerequisites |
+| Permission denied | Global npm requires sudo or prefix config | Use `npm config set prefix ~/.npm-global` or run with sudo |
+| Network failure | Registry unreachable | Retry when network is available |
+| Platform not supported | No binary for this OS/arch | Build from source (see agentd repo) |
 
 ## Notes
 
-This is source-build based; no separate package installer is required.
+Pre-built binaries are available for Linux x64 and macOS arm64. For other platforms, build from the agentd source repository.

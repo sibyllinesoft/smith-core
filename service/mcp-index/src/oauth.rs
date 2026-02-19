@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
 pub struct OAuthProvider {
+    #[allow(dead_code)]
     pub name: String,
     pub client_id: String,
     pub client_secret: String,

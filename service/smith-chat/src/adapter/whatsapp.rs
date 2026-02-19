@@ -64,6 +64,7 @@ impl WhatsAppAdapter {
         &self.config.access_token
     }
 
+    #[allow(dead_code)]
     fn convert_webhook_message(
         &self,
         msg: WhatsAppWebhookMessage,
@@ -229,26 +230,30 @@ struct WhatsAppMessageId {
     id: String,
 }
 
-// Webhook payload types (used by webhook.rs and convert_webhook_message)
-
+// Webhook payload types — deserialization targets for inbound webhook payloads.
+// Structs are constructed by serde, method used by webhook processing.
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppWebhookPayload {
     #[serde(default)]
     pub entry: Vec<WhatsAppEntry>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppEntry {
     #[serde(default)]
     pub changes: Vec<WhatsAppChange>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppChange {
     #[serde(default)]
     pub value: Option<WhatsAppChangeValue>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppChangeValue {
     #[serde(default)]
@@ -257,6 +262,7 @@ pub(crate) struct WhatsAppChangeValue {
     pub contacts: Option<Vec<WhatsAppContact>>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppWebhookMessage {
     pub id: String,
@@ -271,23 +277,27 @@ pub(crate) struct WhatsAppWebhookMessage {
     pub context: Option<WhatsAppMessageContext>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppTextBody {
     pub body: String,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppMessageContext {
     #[serde(default)]
     pub message_id: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppContact {
     #[serde(default)]
     pub profile: Option<WhatsAppProfile>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub(crate) struct WhatsAppProfile {
     #[serde(default)]

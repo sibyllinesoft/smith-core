@@ -6,23 +6,21 @@ description: Start agentd with committed baseline config and verify process heal
 Run:
 
 ```bash
-cargo run --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd -- run \
-  --config ${AGENTD_CONFIG:-${AGENTD_ROOT}/config/agentd.toml} \
+agentd run \
+  --config ${AGENTD_CONFIG:-agentd.toml} \
   --capability-digest ${AGENTD_CAPABILITY_DIGEST:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
 ```
 
 ## What It Does
 
-This skill launches `agentd` directly from source using the valid CLI shape.
+This skill launches `agentd` using the globally installed binary.
 
-1. Runs the explicit `agentd` bin target (multi-bin workspace-safe).
-2. Enables gRPC feature for Envoy JSON transcoding compatibility.
-3. Uses committed `agentd` config instead of insecure fallback parsing.
-4. Supplies required `--capability-digest` argument.
+1. Runs agentd with the specified config file.
+2. Supplies required `--capability-digest` argument.
 
 ## Prerequisites
 
-- `agentd` build completed successfully.
+- `agentd` installed (`npm install -g @sibyllinesoft/agentd`).
 - Required infrastructure services available if runtime depends on them.
 
 ## Expected Output
@@ -41,7 +39,7 @@ This skill launches `agentd` directly from source using the valid CLI shape.
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `could not determine which binary to run` | Missing `--bin agentd` | Use full command shown above |
+| `agentd: command not found` | Not installed | Run `npm install -g @sibyllinesoft/agentd` |
 | `Failed to load config` | Wrong/missing config path | Set `AGENTD_CONFIG` to a valid agentd TOML |
 | `Refusing all-zero capability digest` | Placeholder digest left at zero | Set real `AGENTD_CAPABILITY_DIGEST`, or opt in with `SMITH_ALLOW_ZERO_CAPABILITY_DIGEST=1` for local-only testing |
 | `--capability-digest` required | Missing mandatory flag | Provide 64-char hex digest (env or inline) |

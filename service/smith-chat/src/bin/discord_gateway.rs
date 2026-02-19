@@ -305,7 +305,7 @@ async fn handle_message_create(
         .or_else(|| sender_username);
 
     // Parse timestamp to unix epoch
-    let unix_ts = chrono::DateTime::parse_from_rfc3339(timestamp)
+    let _unix_ts = chrono::DateTime::parse_from_rfc3339(timestamp)
         .map(|dt| dt.timestamp())
         .unwrap_or_else(|_| chrono::Utc::now().timestamp());
 

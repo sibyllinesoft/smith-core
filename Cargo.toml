@@ -6,10 +6,10 @@ members = [
     "service/smith-chat",
     "service/admission",
 ]
-# agentd lives in a separate repo — set AGENTD_ROOT in .env and use `just build-agentd`
+# agentd is installed via npm: npm install -g @sibyllinesoft/agentd
 
 [workspace.package]
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 authors = ["Smith Team"]
 license = "MIT"
