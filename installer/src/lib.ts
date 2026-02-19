@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
+import { homedir } from "os";
 
 import type { KnownProvider } from "@mariozechner/pi-ai";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
@@ -14,7 +15,10 @@ export interface CliArgs {
   step?: string;
   force: boolean;
   help: boolean;
+  /** GitHub owner/repo (default: sibyllinesoft/smith-core) */
   repo?: string;
+  /** Release tag to install (default: latest) */
+  ref?: string;
 }
 
 export interface InstallerOptions {
@@ -84,6 +88,9 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--repo":
         args.repo = argv[++i]!;
         break;
+      case "--ref":
+        args.ref = argv[++i]!;
+        break;
       case "--help":
       case "-h":
         args.help = true;
@@ -114,6 +121,30 @@ export function findSmithRoot(startDir: string): string | null {
   }
 
   return null;
+}
+
+export interface SmithConfig {
+  version: string;
+  repo: string;
+  ref: string;
+  installPath: string;
+  installedAt: string;
+}
+
+export function smithConfigPath(): string {
+  return join(homedir(), ".smith", "config.json");
+}
+
+export function readSmithConfig(): SmithConfig | null {
+  const p = smithConfigPath();
+  if (!existsSync(p)) return null;
+  return JSON.parse(readFileSync(p, "utf8"));
+}
+
+export function writeSmithConfig(config: SmithConfig): void {
+  const dir = join(homedir(), ".smith");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(smithConfigPath(), JSON.stringify(config, null, 2) + "\n");
 }
 
 export function loadSkills(skillsDir: string): Skill[] {

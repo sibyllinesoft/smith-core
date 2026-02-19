@@ -1,6 +1,6 @@
 {
   "name": "@sibyllinesoft/agentd",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Agent daemon for secure capability execution with pluggable isolation backends",
   "license": "MIT",
   "repository": {

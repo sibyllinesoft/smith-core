@@ -1,17 +1,57 @@
 #!/usr/bin/env node
 
-import { copyFileSync, existsSync, readFileSync, writeFileSync } from "fs";
+import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
 import { execFileSync } from "child_process";
+import { pipeline } from "stream/promises";
 import { randomBytes } from "crypto";
+import { tmpdir } from "os";
 import { createInstallerSession } from "./agents.js";
-import { parseArgs, findSmithRoot, evaluateInstallerSecurity } from "./lib.js";
+import { parseArgs, findSmithRoot, evaluateInstallerSecurity, readSmithConfig, writeSmithConfig } from "./lib.js";
 import type { CliArgs } from "./lib.js";
 
 type CommandSpec = {
   command: string;
   args: string[];
 };
+
+const DEFAULT_REPO = "sibyllinesoft/smith-core";
+
+async function resolveLatestTag(repo: string): Promise<string> {
+  const resp = await fetch(
+    `https://api.github.com/repos/${repo}/releases/latest`,
+    { headers: { "User-Agent": "smith-installer" } }
+  );
+  if (!resp.ok) {
+    throw new Error(`Failed to fetch latest release from ${repo}: ${resp.status}`);
+  }
+  const data = (await resp.json()) as { tag_name: string };
+  return data.tag_name;
+}
+
+async function downloadRepo(repo: string, tag: string): Promise<string> {
+  const target = resolve(process.cwd(), "smith-core");
+  const tarballUrl = `https://github.com/${repo}/archive/refs/tags/${tag}.tar.gz`;
+
+  console.log(`[installer] Downloading ${repo}@${tag} ...`);
+  const resp = await fetch(tarballUrl);
+  if (!resp.ok) {
+    throw new Error(`Failed to download ${tarballUrl}: ${resp.status}`);
+  }
+
+  const tmpFile = join(tmpdir(), `smith-core-${tag}.tar.gz`);
+  const fileStream = createWriteStream(tmpFile);
+  await pipeline(resp.body as any, fileStream);
+
+  mkdirSync(target, { recursive: true });
+  execFileSync("tar", ["xzf", tmpFile, "--strip-components=1", "-C", target], {
+    stdio: "inherit",
+  });
+  unlinkSync(tmpFile);
+
+  console.log(`[installer] Extracted ${repo}@${tag} to ${target}`);
+  return target;
+}
 
 function runCommand(cwd: string, spec: CommandSpec): void {
   execFileSync(spec.command, spec.args, {
@@ -351,7 +391,8 @@ Options:
   --thinking <level>   Thinking level: none, low, medium, high (default: medium)
   --step <name>        Run one step: all, infra, build, npm, verify, policy (also accepts 25/30/40/90)
   --force              Recreate infrastructure before running infra/all
-  --repo <path>        Path to smith-core repo root (auto-detected by default)
+  --repo <owner/repo>  GitHub repository (default: sibyllinesoft/smith-core)
+  --ref <tag>          Release tag to install (default: latest)
   --help               Show this help`);
 }
 
@@ -369,20 +410,31 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  // Resolve smith-core repo root.
-  const smithRoot = args.repo
-    ? resolve(args.repo)
-    : findSmithRoot(process.cwd());
+  // Resolve smith-core location
+  const existingConfig = readSmithConfig();
+  let smithRoot: string;
 
-  if (!smithRoot || !existsSync(join(smithRoot, "justfile"))) {
-    console.error(
-      "Error: Could not find Smith Core repo root.\n" +
-      "Run from within the smith-core repo, or use --repo <path>.\n\n" +
-      "To clone the repo:\n" +
-      "  git clone https://github.com/sibyllinesoft/smith-core.git\n" +
-      "  cd smith-core && npx @sibyllinesoft/smith-installer"
-    );
-    process.exit(1);
+  if (args.repo) {
+    smithRoot = resolve(args.repo);
+  } else if (existingConfig && existsSync(existingConfig.installPath)) {
+    smithRoot = existingConfig.installPath;
+    console.log(`[installer] Smith Core ${existingConfig.ref} found at ${smithRoot}`);
+  } else {
+    const localRoot = findSmithRoot(process.cwd());
+    if (localRoot) {
+      smithRoot = localRoot;
+    } else {
+      const repo = args.repo ?? DEFAULT_REPO;
+      const tag = args.ref ?? (await resolveLatestTag(repo));
+      smithRoot = await downloadRepo(repo, tag);
+      writeSmithConfig({
+        version: tag.replace(/^v/, ""),
+        repo,
+        ref: tag,
+        installPath: smithRoot,
+        installedAt: new Date().toISOString(),
+      });
+    }
   }
 
   ensureEnvFile(smithRoot);
