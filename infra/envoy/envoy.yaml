@@ -37,6 +37,22 @@ static_resources:
                       print_options:
                         preserve_proto_field_names: true
                         always_print_primitive_fields: true
+                  # External authorization via OPA
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_authz
+                        timeout: 1s
+                      failure_mode_allow: false
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
+                        pack_as_bytes: false
+                      status_on_error:
+                        code: 503
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -62,6 +78,10 @@ static_resources:
                             status: 200
                             body:
                               inline_string: "{\"status\":\"ok\",\"service\":\"envoy\"}\n"
+                          typed_per_filter_config:
+                            envoy.filters.http.ext_authz:
+                              "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthzPerRoute
+                              disabled: true
 
                         - match:
                             prefix: "/agentd.v1.Agentd/"
@@ -252,6 +272,23 @@ static_resources:
                     socket_address:
                       address: mcp-index
                       port_value: 9200
+
+    - name: opa_authz
+      type: STRICT_DNS
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: opa_authz
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: opa-management
+                      port_value: 9292
 
     - name: agentd_grpc
       type: STRICT_DNS
