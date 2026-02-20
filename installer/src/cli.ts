@@ -7,6 +7,7 @@ import { pipeline } from "stream/promises";
 import { randomBytes } from "crypto";
 import { tmpdir, homedir } from "os";
 import { createInterface } from "readline/promises";
+import { createServer } from "net";
 import { createInstallerSession } from "./agents.js";
 import { parseArgs, findSmithRoot, evaluateInstallerSecurity, readSmithConfig, writeSmithConfig } from "./lib.js";
 import type { CliArgs } from "./lib.js";
@@ -215,7 +216,49 @@ function isCommandAvailable(cmd: string): boolean {
   }
 }
 
-function runPreflightChecks(): void {
+type NodeVersionManagerInfo = {
+  name: "nvm" | "fnm";
+  dir: string;
+} | null;
+
+function detectNodeVersionManager(): NodeVersionManagerInfo {
+  // fnm is a standalone binary
+  try {
+    execFileSync("fnm", ["--version"], { stdio: "ignore" });
+    return { name: "fnm", dir: "" };
+  } catch {}
+
+  // nvm is a shell function sourced from NVM_DIR/nvm.sh
+  const nvmDir = process.env.NVM_DIR || join(homedir(), ".nvm");
+  if (existsSync(join(nvmDir, "nvm.sh"))) {
+    return { name: "nvm", dir: nvmDir };
+  }
+
+  return null;
+}
+
+const REQUIRED_PORTS: Array<[number, string]> = [
+  [4222, "NATS"],
+  [5432, "PostgreSQL"],
+  [3000, "Grafana"],
+  [9200, "MCP Index"],
+  [6173, "Envoy mTLS Gateway"],
+  [9901, "Envoy Admin"],
+];
+
+function checkPortAvailable(port: number, host = "127.0.0.1"): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = createServer();
+    server.once("error", () => resolve(false));
+    server.once("listening", () => {
+      server.close();
+      resolve(true);
+    });
+    server.listen(port, host);
+  });
+}
+
+async function runPreflightChecks(): Promise<void> {
   const errors: string[] = [];
 
   // Check Docker
@@ -240,7 +283,12 @@ function runPreflightChecks(): void {
   const nodeVersion = process.versions.node;
   const major = parseInt(nodeVersion.split(".")[0]!, 10);
   if (major < 20) {
-    errors.push(`Node.js ${nodeVersion} detected but >=20 is required. Install via nvm or https://nodejs.org/`);
+    errors.push(
+      `Node.js v${nodeVersion} detected but >=20 is required (>=22 recommended).\n` +
+      `    Install with nvm:  nvm install 22 && nvm use 22\n` +
+      `    Install with fnm:  fnm install 22 && fnm use 22\n` +
+      `    Or download from:  https://nodejs.org/`
+    );
   }
 
   if (errors.length > 0) {
@@ -255,11 +303,45 @@ function runPreflightChecks(): void {
   console.log(`[preflight] Docker OK, Node.js ${nodeVersion} OK`);
 
   if (major < 22) {
+    const versionManager = detectNodeVersionManager();
+    if (versionManager) {
+      const cmd = versionManager.name;
+      console.warn(
+        `\n[preflight] Warning: Node.js v${nodeVersion} detected — runtime services require Node >= 22.\n` +
+        `[preflight] Affected: pi-bridge, smith-cron, session-recorder (local dev only;\n` +
+        `[preflight] Docker containers use Node 22 regardless).\n` +
+        `[preflight] Detected ${cmd}. Upgrade with: ${cmd} install 22 && ${cmd} use 22\n`
+      );
+    } else {
+      console.warn(
+        `\n[preflight] Warning: Node.js v${nodeVersion} detected — runtime services require Node >= 22.\n` +
+        `[preflight] Affected: pi-bridge, smith-cron, session-recorder (local dev only;\n` +
+        `[preflight] Docker containers use Node 22 regardless).\n` +
+        `[preflight] No version manager (nvm/fnm) detected — the installer agent can help set one up.\n`
+      );
+    }
+  }
+
+  // Check port availability for Docker services
+  const portConflicts: Array<[number, string]> = [];
+  for (const [port, service] of REQUIRED_PORTS) {
+    const available = await checkPortAvailable(port);
+    if (!available) {
+      portConflicts.push([port, service]);
+    }
+  }
+
+  if (portConflicts.length > 0) {
+    console.warn("\n[preflight] Port conflicts detected — these ports are already in use:");
+    for (const [port, service] of portConflicts) {
+      console.warn(`[preflight]   :${port} (${service})`);
+    }
     console.warn(
-      `[preflight] Warning: Node.js ${nodeVersion} is supported for the installer, but runtime\n` +
-      `[preflight] services (pi-bridge, smith-cron, session-recorder) require Node >= 22.\n` +
-      `[preflight] Docker containers use Node 22 regardless, but local development may fail.\n` +
-      `[preflight] Upgrade via: nvm install 22 && nvm use 22`
+      `[preflight]\n` +
+      `[preflight] Docker Compose will fail if these ports are not freed.\n` +
+      `[preflight] To identify the process: ss -tlnp 'sport = :PORT' (Linux)\n` +
+      `[preflight]                          lsof -iTCP:PORT -sTCP:LISTEN (macOS)\n` +
+      `[preflight] If a previous smith-core stack is running: docker compose down\n`
     );
   }
 }
@@ -378,6 +460,37 @@ function ensureSecurityDefaults(smithRoot: string): void {
     }
   };
 
+  // Database / service password hardening — replace known weak defaults
+  const weakPasswords: Array<[string, string[]]> = [
+    ["POSTGRES_PASSWORD", ["smith-dev", "postgres", "password", "changeme"]],
+    ["CLICKHOUSE_PASSWORD", ["observability-dev", "clickhouse", "password", "changeme"]],
+    ["GRAFANA_ADMIN_PASSWORD", ["admin", "grafana", "password", "changeme"]],
+  ];
+
+  for (const [key, weakValues] of weakPasswords) {
+    const current = (vars[key] ?? "").trim();
+    if (current.length === 0 || weakValues.includes(current)) {
+      const newPassword = generateHexSecret(16); // 32-char hex
+      upsertEnvValue(envPath, key, newPassword);
+
+      // Update connection strings that embed the old password
+      if (key === "POSTGRES_PASSWORD" && current.length > 0) {
+        const connKeys = ["SMITH_DATABASE_URL", "PI_BRIDGE_PG"];
+        for (const connKey of connKeys) {
+          const connStr = (vars[connKey] ?? "").trim();
+          if (connStr && connStr.includes(`:${current}@`)) {
+            const updated = connStr.replace(`:${current}@`, `:${newPassword}@`);
+            upsertEnvValue(envPath, connKey, updated);
+            vars[connKey] = updated;
+          }
+        }
+      }
+
+      vars[key] = newPassword;
+      generated.push(key);
+    }
+  }
+
   // MCP index / sidecar API hardening
   ensureToken("MCP_INDEX_API_TOKEN", 24, 24);
   ensureToken("MCP_SIDECAR_API_TOKEN", 24, 24);
@@ -405,6 +518,50 @@ function ensureSecurityDefaults(smithRoot: string): void {
       .filter(Boolean)
       .join("; ");
     console.log(`[installer] Applied security defaults in .env (${details})`);
+  }
+}
+
+function tryInstallSmithServices(smithRoot: string): void {
+  const platform = process.platform;
+  const arch = process.arch;
+  const platformTag = `${platform}-${arch}`;
+  const supported: Record<string, string> = {
+    "linux-x64": "@sibyllinesoft/smith-services-linux-x64",
+    "darwin-arm64": "@sibyllinesoft/smith-services-darwin-arm64",
+  };
+
+  if (!supported[platformTag]) {
+    console.warn(
+      `[installer] smith-services: no pre-built binaries for ${platformTag}.\n` +
+      `[installer] Supported platforms: ${Object.keys(supported).join(", ")}.\n` +
+      `[installer] To build from source: cargo build --workspace\n` +
+      `[installer] Skipping smith-services install (non-fatal).`
+    );
+    return;
+  }
+
+  try {
+    runCommand(smithRoot, { command: "npm", args: ["install", "-g", "@sibyllinesoft/smith-services"] });
+  } catch {
+    console.warn(
+      `\n[installer] smith-services installation failed.\n` +
+      `[installer] The platform package ${supported[platformTag]} may not be published yet.\n` +
+      `[installer] This is non-fatal — you can build from source: cargo build --workspace\n` +
+      `[installer] To retry later: npm install -g @sibyllinesoft/smith-services\n`
+    );
+    return;
+  }
+
+  // Verify at least one binary works
+  try {
+    execFileSync("smith-chat-daemon", ["--help"], { stdio: "pipe", env: process.env });
+    console.log("[installer] smith-services installed and verified.");
+  } catch {
+    console.warn(
+      `\n[installer] smith-services package installed but binaries not functional on ${platformTag}.\n` +
+      `[installer] The platform package ${supported[platformTag]} may be missing from the registry.\n` +
+      `[installer] This is non-fatal — you can build from source: cargo build --workspace\n`
+    );
   }
 }
 
@@ -536,23 +693,18 @@ function runNonInteractiveBootstrap(
     all: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
-      { command: "cargo", args: ["build", "--workspace"] },
       { command: "npm", args: ["install"] },
-      { command: "cargo", args: ["check", "--workspace"] },
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     infra: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
     ],
-    build: [
-      { command: "cargo", args: ["build", "--workspace"] },
-    ],
+    build: [],
     npm: [
       { command: "npm", args: ["install"] },
     ],
     verify: [
-      { command: "cargo", args: ["check", "--workspace"] },
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "25": [
@@ -562,11 +714,8 @@ function runNonInteractiveBootstrap(
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
     ],
-    "40": [
-      { command: "cargo", args: ["build", "--workspace"] },
-    ],
+    "40": [],
     "90": [
-      { command: "cargo", args: ["check", "--workspace"] },
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "configure-policy": [
@@ -599,9 +748,10 @@ function runNonInteractiveBootstrap(
     waitForDockerHealth(smithRoot);
   }
 
-  // Install agentd (non-fatal) after npm steps
-  const agentdSteps = ["all"];
-  if (agentdSteps.includes(normalizedStep)) {
+  // Install pre-built binaries (non-fatal) after build/all steps
+  const binarySteps = ["all", "build", "40"];
+  if (binarySteps.includes(normalizedStep)) {
+    tryInstallSmithServices(smithRoot);
     tryInstallAgentd(smithRoot);
   }
 
@@ -620,7 +770,7 @@ Options:
   --provider <name>    LLM provider (default: anthropic)
   --model <id>         Model ID (default: claude-sonnet-4-20250514)
   --thinking <level>   Thinking level: none, low, medium, high (default: medium)
-  --step <name>        Run one step: all, infra, build, npm, verify, policy (also accepts 25/30/40/90)
+  --step <name>        Run one step: all, infra, build, npm, verify, policy (also 25/30/40/90)
   --force              Recreate infrastructure before running infra/all
   --repo <owner/repo>  GitHub repository (default: sibyllinesoft/smith-core)
   --ref <tag>          Release tag to install (default: latest)
@@ -644,7 +794,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  runPreflightChecks();
+  await runPreflightChecks();
 
   // Resolve smith-core location
   const existingConfig = readSmithConfig();

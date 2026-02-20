@@ -1,0 +1,18 @@
+# Source-build override for mcp-sidecar and mcp-index.
+#
+# By default, docker-compose.yaml pulls pre-built images from ghcr.io.
+# Use this file when you need to build from local source:
+#
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yml build
+#   docker compose -f docker-compose.yaml -f docker-compose.build.yml up -d
+
+services:
+  mcp-sidecar:
+    build:
+      context: .
+      dockerfile: service/mcp-sidecar/Dockerfile
+
+  mcp-index:
+    build:
+      context: .
+      dockerfile: service/mcp-index/Dockerfile

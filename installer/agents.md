@@ -15,8 +15,8 @@ You are the Smith Core installer and configuration agent. Your job is to bootstr
 
 Run these phases in order unless the user asks for a specific step:
 
-1. `infra` — start Docker infrastructure.
-2. `build` — compile Rust workspaces.
+1. `infra` — start Docker infrastructure (pulls pre-built images from ghcr.io).
+2. `build` — install pre-built smith-services and agentd binaries via npm.
 3. `npm` — install Node workspace dependencies.
 4. `verify` — run lightweight build checks and tunnel e2e checks when configured.
 5. `configure-agentd` — ensure `.env` defaults are present and, on macOS, enable Gondolin VM pool settings.
@@ -49,22 +49,22 @@ if [ "$(uname -s)" = "Darwin" ]; then
   # SMITH_EXECUTOR_GONDOLIN_ARGS=exec,--
 fi
 
-# infra
+# infra (pulls pre-built images from ghcr.io)
 bash infra/envoy/certs/generate-certs.sh
 docker compose up -d
 docker compose ps
 
-# build
-cargo build --workspace
+# build (install pre-built binaries)
+npm install -g @sibyllinesoft/smith-services
+npm install -g @sibyllinesoft/agentd
 
 # npm
 npm install
-npm install -g @sibyllinesoft/agentd
 
 # verify
-cargo check --workspace
 npm run build --workspaces --if-present
-agentd --version
+smith-chat-daemon --help || echo "smith-services not installed (non-fatal)"
+agentd --version || echo "agentd not installed (non-fatal)"
 
 # optional tunnel e2e checks when configured in .env
 bash scripts/tunnel-e2e.sh cloudflare
@@ -107,3 +107,59 @@ When a step fails:
 3. Apply the smallest viable fix.
 4. Re-run only the failed command.
 5. Summarize the root cause and the fix applied.
+
+### Port Conflicts
+
+If Docker Compose fails with "port is already allocated" or "address already in use":
+
+```bash
+# Linux — identify what is using a port
+ss -tlnp 'sport = :5432'
+
+# macOS — identify what is using a port
+lsof -iTCP:5432 -sTCP:LISTEN
+
+# If a previous smith-core stack is running
+docker compose down
+```
+
+Key ports: 4222 (NATS), 5432 (PostgreSQL), 3000 (Grafana), 9200 (MCP Index), 6173 (Envoy), 9901 (Envoy Admin).
+
+### Node.js Version Management
+
+If `node_22_ok` is `no` in preflight, check `node_version_manager`:
+
+- **`fnm` detected**: Run `fnm install 22 && fnm use 22`, then verify with `node -v`.
+- **`nvm` detected**: Run `. "$NVM_DIR/nvm.sh" && nvm install 22 && nvm use 22`, then verify with `node -v`.
+- **`none` detected**: Ask the user which version manager they'd like to install:
+  - **fnm** (recommended — single binary, fast):
+    ```bash
+    curl -fsSL https://fnm.vercel.app/install | bash
+    ```
+  - **nvm** (widely used):
+    ```bash
+    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+    ```
+  After installation, source the shell profile and install Node 22.
+  Remind the user they may need to restart their shell for PATH changes to take effect.
+
+### npm Auth Warnings
+
+`npm notice Access token expired or revoked` during `npm install -g` is harmless — smith packages are public. This warning appears when npm finds a stale token in `~/.npmrc`. The install will succeed regardless.
+
+### Network Configuration
+
+When no private network indicator is detected, recommend one of:
+
+```bash
+# Cloudflare Tunnel
+cloudflared tunnel login
+# Then set CLOUDFLARE_TUNNEL_TOKEN in .env
+
+# Tailscale
+tailscale up
+# Then set TAILSCALE_AUTHKEY in .env
+
+# SSH tunneling (simplest)
+ssh -L 6173:localhost:6173 user@host
+```

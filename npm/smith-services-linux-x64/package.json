@@ -1,0 +1,16 @@
+{
+  "name": "@sibyllinesoft/smith-services-linux-x64",
+  "version": "0.1.10",
+  "description": "Smith service binaries for Linux x64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sibyllinesoft/smith-core.git"
+  },
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

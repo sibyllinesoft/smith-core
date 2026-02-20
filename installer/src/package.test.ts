@@ -64,7 +64,7 @@ describe("agents.md", () => {
 
   it("references bootstrap commands used in this repo", () => {
     expect(agentsMd).toContain("docker compose up -d");
-    expect(agentsMd).toContain("cargo build --workspace");
+    expect(agentsMd).toContain("npm install -g @sibyllinesoft/smith-services");
     expect(agentsMd).toContain("npm install");
   });
 });

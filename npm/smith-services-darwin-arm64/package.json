@@ -1,0 +1,16 @@
+{
+  "name": "@sibyllinesoft/smith-services-darwin-arm64",
+  "version": "0.1.10",
+  "description": "Smith service binaries for macOS ARM64",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sibyllinesoft/smith-core.git"
+  },
+  "os": ["darwin"],
+  "cpu": ["arm64"],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

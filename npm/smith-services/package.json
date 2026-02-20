@@ -1,0 +1,33 @@
+{
+  "name": "@sibyllinesoft/smith-services",
+  "version": "0.1.10",
+  "description": "Pre-built Smith chat and admission binaries",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sibyllinesoft/smith-core.git"
+  },
+  "homepage": "https://smithcore.dev",
+  "bin": {
+    "smith-chat-daemon": "bin/smith-chat-daemon",
+    "smith-discord-gateway": "bin/smith-discord-gateway",
+    "smith-signal-gateway": "bin/smith-signal-gateway",
+    "smith-google-chat-gateway": "bin/smith-google-chat-gateway",
+    "smith-imessage-gateway": "bin/smith-imessage-gateway",
+    "smith-matrix-gateway": "bin/smith-matrix-gateway",
+    "smith-telegram-gateway": "bin/smith-telegram-gateway",
+    "smith-slack-gateway": "bin/smith-slack-gateway",
+    "smith-whatsapp-gateway": "bin/smith-whatsapp-gateway",
+    "smith-teams-gateway": "bin/smith-teams-gateway",
+    "smith-mattermost-gateway": "bin/smith-mattermost-gateway",
+    "smith-admission": "bin/smith-admission"
+  },
+  "optionalDependencies": {
+    "@sibyllinesoft/smith-services-linux-x64": "0.1.10",
+    "@sibyllinesoft/smith-services-darwin-arm64": "0.1.10"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

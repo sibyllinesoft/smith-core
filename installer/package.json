@@ -1,6 +1,6 @@
 {
   "name": "@sibyllinesoft/smith-installer",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "AI-guided Smith platform installer powered by pi-agent",
   "license": "MIT",
   "repository": {

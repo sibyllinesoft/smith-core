@@ -6,24 +6,24 @@ description: Verify the full Smith Core bootstrap state after install steps
 Run:
 
 ```bash
-cargo check --workspace
 npm run build --workspaces --if-present
 docker compose ps
 ```
 
-Then check agentd (optional, may not be installed):
+Then check pre-built binaries (optional, may not be installed):
 
 ```bash
+smith-chat-daemon --help || echo "smith-services not installed (non-fatal)"
 agentd --version || echo "agentd not installed (non-fatal)"
 ```
 
 ## What It Does
 
-This skill validates that core components are buildable and infrastructure is running.
+This skill validates that core components are installed and infrastructure is running.
 
-1. Checks Rust root workspace.
-2. Builds Node workspaces.
-3. Confirms Docker services are active and healthy.
+1. Builds Node workspaces.
+2. Confirms Docker services are active and healthy.
+3. Optionally verifies smith-services binaries are installed (non-fatal if missing).
 4. Optionally verifies agentd is installed (non-fatal if missing).
 
 ## Prerequisites
@@ -33,27 +33,26 @@ This skill validates that core components are buildable and infrastructure is ru
 
 ## Expected Output
 
-- All check/build commands exit with status 0.
+- All build commands exit with status 0.
 - `docker compose ps` shows core services as `running` or `healthy`.
 
 ## Reading Results
 
 Installation is considered healthy when:
 
-- Rust checks pass.
 - Node workspace build passes.
 - Core services (`nats`, `postgres`, `envoy`, `mcp-index`) are running.
 
-agentd is a supplementary component — its absence does not block the core stack.
+smith-services and agentd are supplementary components — their absence does not block the core stack.
 
 ## Common Failures
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Rust check failures | Code/toolchain mismatch | Fix compile issues and rerun |
 | npm build failures | TS/dependency issue | Resolve workspace build errors |
 | Containers not running | Compose/startup failure | Inspect compose logs and restart |
 | Intermittent health failures | Service startup race | Wait and re-run verification |
+| smith-chat-daemon --help fails | Platform binary not available | Non-fatal; build from source with cargo if needed |
 | agentd --version fails | Platform binary not available | Non-fatal; build from source if needed |
 
 ## Notes

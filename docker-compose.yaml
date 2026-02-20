@@ -257,12 +257,9 @@ services:
       - smith
     restart: unless-stopped
 
-  # ── MCP Sidecar (build-only) ────────────────────────────────────────────
+  # ── MCP Sidecar (pre-built image) ───────────────────────────────────────
   mcp-sidecar:
-    build:
-      context: .
-      dockerfile: service/mcp-sidecar/Dockerfile
-    image: mcp-sidecar
+    image: ghcr.io/sibyllinesoft/mcp-sidecar:${SMITH_VERSION:-latest}
     entrypoint: ["true"]
     restart: "no"
 
@@ -270,6 +267,8 @@ services:
   mcp-postgres:
     build:
       context: ./infra/mcp-servers/postgres
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
     container_name: smith-mcp-postgres
     hostname: mcp-postgres
     expose:
@@ -295,6 +294,8 @@ services:
   mcp-users:
     build:
       context: ./infra/mcp-servers/users
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
     container_name: smith-mcp-users
     hostname: mcp-users
     expose:
@@ -321,6 +322,8 @@ services:
   mcp-cron:
     build:
       context: ./infra/mcp-servers/cron
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
     container_name: smith-mcp-cron
     hostname: mcp-cron
     expose:
@@ -349,9 +352,7 @@ services:
 
   # ── MCP Index (Tool Catalog) ────────────────────────────────────────────
   mcp-index:
-    build:
-      context: .
-      dockerfile: service/mcp-index/Dockerfile
+    image: ghcr.io/sibyllinesoft/mcp-index:${SMITH_VERSION:-latest}
     container_name: smith-mcp-index
     hostname: mcp-index
     ports:

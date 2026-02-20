@@ -26,7 +26,7 @@ This skill starts the chat bridge daemon and the correct gateway binary for each
 ### 1. Start the daemon
 
 ```bash
-cargo run -p smith-chat --features webhooks --bin smith-chat-daemon
+smith-chat-daemon
 ```
 
 The daemon reads `CHAT_BRIDGE_CONFIG` (defaults to `config/chat-bridge.toml`) and starts the webhook server on `CHAT_BRIDGE_WEBHOOK_PORT` (defaults to 8092).
@@ -34,7 +34,7 @@ The daemon reads `CHAT_BRIDGE_CONFIG` (defaults to `config/chat-bridge.toml`) an
 Start this in a separate terminal or background it with log redirection:
 
 ```bash
-cargo run -p smith-chat --features webhooks --bin smith-chat-daemon 2>&1 | tee logs/chat-daemon.log &
+smith-chat-daemon 2>&1 | tee logs/chat-daemon.log &
 ```
 
 ### 2. Start gateway(s) for each configured platform
@@ -54,16 +54,16 @@ Parse the `type = ` values from the config and start the matching gateway binary
 | `google_chat` | `smith-google-chat-gateway` | `GOOGLE_CHAT_WEBHOOK_URL` |
 | `imessage` | `smith-imessage-gateway` | (config-only) |
 
-Start each gateway with:
+Start each gateway directly:
 
 ```bash
-cargo run -p smith-chat --bin <binary-name>
+<binary-name>
 ```
 
 For example, for Discord:
 
 ```bash
-cargo run -p smith-chat --bin smith-discord-gateway 2>&1 | tee logs/discord-gateway.log &
+smith-discord-gateway 2>&1 | tee logs/discord-gateway.log &
 ```
 
 Each gateway should run in its own terminal or backgrounded process.
@@ -73,7 +73,7 @@ Each gateway should run in its own terminal or backgrounded process.
 - `config/chat-bridge.toml` exists and has at least one `[[adapters]]` stanza (run `setup-chat-bridge` first).
 - Platform credentials set in `.env` for each configured adapter.
 - Docker stack running (NATS and Redis required by daemon).
-- Rust workspace built (`cargo build -p smith-chat`).
+- smith-services installed (`npm install -g @sibyllinesoft/smith-services`) or built from source (`cargo build -p smith-chat`).
 
 ## Expected Output
 
