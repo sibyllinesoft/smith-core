@@ -3,7 +3,7 @@ set -e
 BIN_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 for pkg in smith-services-linux-x64 smith-services-darwin-arm64; do
-  bin="$SCRIPT_DIR/../../@sibyllinesoft/$pkg/bin/$BIN_NAME"
+  bin="$SCRIPT_DIR/../../$pkg/bin/$BIN_NAME"
   if [ -x "$bin" ]; then
     exec "$bin" "$@"
   fi
