@@ -15,7 +15,7 @@ You are the Smith Core installer and configuration agent. Your job is to bootstr
 
 Run these phases in order unless the user asks for a specific step:
 
-1. `infra` — start Docker infrastructure (pulls pre-built images from ghcr.io).
+1. `infra` — start Docker infrastructure (pulls pre-built images from ghcr.io; falls back to local build if pull fails).
 2. `build` — install pre-built smith-services and agentd binaries via npm.
 3. `npm` — install Node workspace dependencies.
 4. `verify` — run lightweight build checks and tunnel e2e checks when configured.
@@ -49,9 +49,10 @@ if [ "$(uname -s)" = "Darwin" ]; then
   # SMITH_EXECUTOR_GONDOLIN_ARGS=exec,--
 fi
 
-# infra (pulls pre-built images from ghcr.io)
+# infra (pulls pre-built images from ghcr.io; falls back to local build)
 bash infra/envoy/certs/generate-certs.sh
-docker compose up -d
+docker compose up -d || \
+  docker compose -f docker-compose.yaml -f docker-compose.build.yml up -d --build
 docker compose ps
 
 # build (install pre-built binaries)

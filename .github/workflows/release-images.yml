@@ -15,6 +15,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+      # Note: package visibility must be set to "public" in GitHub org settings
+      # (Settings → Packages → mcp-sidecar / mcp-index → Change visibility)
+      # so that `docker compose pull` works without authentication.
     strategy:
       matrix:
         include:

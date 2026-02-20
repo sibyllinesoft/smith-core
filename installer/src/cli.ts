@@ -612,6 +612,21 @@ function tryInstallAgentd(smithRoot: string): void {
   }
 }
 
+function runDockerComposeUp(smithRoot: string): void {
+  try {
+    runCommand(smithRoot, { command: "docker", args: ["compose", "up", "-d"] });
+  } catch {
+    console.warn(
+      "[installer] docker compose up failed (ghcr.io images may be private or unavailable).\n" +
+      "[installer] Falling back to local build via docker-compose.build.yml..."
+    );
+    runCommand(smithRoot, {
+      command: "docker",
+      args: ["compose", "-f", "docker-compose.yaml", "-f", "docker-compose.build.yml", "up", "-d", "--build"],
+    });
+  }
+}
+
 function waitForDockerHealth(smithRoot: string): void {
   console.log("[installer] Waiting for Docker services to become healthy...");
   try {
@@ -689,16 +704,18 @@ function runNonInteractiveBootstrap(
 ): void {
   const normalizedStep = step?.toLowerCase() ?? "all";
 
-  const plans: Record<string, CommandSpec[]> = {
+  type PlanStep = CommandSpec | { custom: "docker-compose-up" };
+
+  const plans: Record<string, PlanStep[]> = {
     all: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
-      { command: "docker", args: ["compose", "up", "-d"] },
+      { custom: "docker-compose-up" },
       { command: "npm", args: ["install"] },
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     infra: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
-      { command: "docker", args: ["compose", "up", "-d"] },
+      { custom: "docker-compose-up" },
     ],
     build: [],
     npm: [
@@ -712,7 +729,7 @@ function runNonInteractiveBootstrap(
     ],
     "30": [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
-      { command: "docker", args: ["compose", "up", "-d"] },
+      { custom: "docker-compose-up" },
     ],
     "40": [],
     "90": [
@@ -739,7 +756,11 @@ function runNonInteractiveBootstrap(
   }
 
   for (const spec of plan) {
-    runCommand(smithRoot, spec);
+    if ("custom" in spec) {
+      runDockerComposeUp(smithRoot);
+    } else {
+      runCommand(smithRoot, spec);
+    }
   }
 
   // Wait for Docker services to become healthy after infra steps
