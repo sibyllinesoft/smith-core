@@ -17,5 +17,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "install:all": "npm install"
+  },
+  "overrides": {
+    "minimatch": "^10.2.1"
   }
 }

@@ -40,12 +40,12 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "^0.52.0",
-    "@mariozechner/pi-ai": "^0.52.0"
+    "@mariozechner/pi-ai": "^0.52.0",
+    "@mariozechner/pi-coding-agent": "^0.52.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^2.0.0"
+    "vitest": "^4.0.18"
   }
 }
