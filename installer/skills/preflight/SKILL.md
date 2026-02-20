@@ -26,10 +26,16 @@ MCP_INDEX_API_TOKEN="$(read_env_value MCP_INDEX_API_TOKEN)"
 CLOUDFLARE_TUNNEL_TOKEN="$(read_env_value CLOUDFLARE_TUNNEL_TOKEN)"
 TAILSCALE_AUTHKEY="$(read_env_value TAILSCALE_AUTHKEY)"
 
+NODE_VERSION="$(node -v 2>/dev/null || echo missing)"
+NODE_MAJOR="${NODE_VERSION#v}"
+NODE_MAJOR="${NODE_MAJOR%%.*}"
+
 cat > var/installer/preflight.json <<JSON
 {
   "env_source": "'${ENV_SOURCE}'",
-  "node": "'$(node -v 2>/dev/null || echo missing)'",
+  "node": "'${NODE_VERSION}'",
+  "node_major": "'${NODE_MAJOR}'",
+  "node_22_ok": "'$( [ "${NODE_MAJOR}" -ge 22 ] 2>/dev/null && echo yes || echo no )'",
   "docker": "'$(docker --version 2>/dev/null || echo missing)'",
   "compose": "'$(docker compose version 2>/dev/null || echo missing)'",
   "cargo": "'$(cargo --version 2>/dev/null || echo missing)'",
@@ -61,7 +67,9 @@ This skill creates a lightweight local preflight snapshot for the installer agen
 A JSON document exists at `var/installer/preflight.json` and includes:
 
 - `env_source`
-- `node`
+- `node` — full version string
+- `node_major` — major version number
+- `node_22_ok` — `yes` if Node >= 22 (recommended for runtime services)
 - `docker`
 - `compose`
 - `cargo`
@@ -73,6 +81,7 @@ A JSON document exists at `var/installer/preflight.json` and includes:
 ## Reading Results
 
 - Any `missing` value is a hard blocker for full bootstrap.
+- If `node_22_ok` is `no`, warn that runtime services (pi-bridge, smith-cron, session-recorder) require Node >= 22 for local development. Docker containers use Node 22 regardless, so this only affects running services outside Docker.
 - If all values are present, continue with stack startup/build steps.
 - If password defaults or missing private-network hints are detected, continue but emit loud warnings.
 

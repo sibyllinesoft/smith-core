@@ -7,7 +7,7 @@ Run:
 
 ```bash
 bash infra/envoy/certs/generate-certs.sh
-docker compose up -d
+docker compose up -d --wait --wait-timeout 120
 docker compose ps
 ```
 
@@ -17,7 +17,7 @@ This skill launches the local infrastructure dependencies.
 
 1. Ensures local Envoy mTLS certs exist before container startup.
 2. Starts NATS, Postgres, Redis, ClickHouse, Grafana, OPA, Envoy, and MCP services.
-3. Ensures background containers are running.
+3. Waits for all services with health checks to become healthy (up to 120s).
 4. Gives a service-level health snapshot via `docker compose ps`.
 5. Establishes prerequisites for bridge and service processes.
 
@@ -29,7 +29,7 @@ This skill launches the local infrastructure dependencies.
 ## Expected Output
 
 - Cert generation exits successfully (or reports existing certs).
-- `docker compose up -d` exits successfully.
+- `docker compose up -d --wait` exits successfully with all services healthy.
 - `docker compose ps` shows core services as `running` or `healthy`.
 
 ## Reading Results
@@ -41,6 +41,8 @@ Focus on these critical services:
 - `smith-envoy`
 - `smith-mcp-index`
 
+If any service shows `health: starting` after `--wait` completes, it may still be initializing. Check logs.
+
 ## Common Failures
 
 | Symptom | Cause | Fix |
@@ -50,6 +52,7 @@ Focus on these critical services:
 | Port bind error | Port already in use | Free the port or remap in compose |
 | Image pull/build failure | Network or registry failure | Retry after network recovery |
 | Healthcheck stuck | Dependency not ready | Check dependent service logs |
+| Wait timeout exceeded | Slow machine or heavy load | Retry with `docker compose up -d --wait --wait-timeout 300` |
 
 ## Notes
 

@@ -253,6 +253,15 @@ function runPreflightChecks(): void {
   }
 
   console.log(`[preflight] Docker OK, Node.js ${nodeVersion} OK`);
+
+  if (major < 22) {
+    console.warn(
+      `[preflight] Warning: Node.js ${nodeVersion} is supported for the installer, but runtime\n` +
+      `[preflight] services (pi-bridge, smith-cron, session-recorder) require Node >= 22.\n` +
+      `[preflight] Docker containers use Node 22 regardless, but local development may fail.\n` +
+      `[preflight] Upgrade via: nvm install 22 && nvm use 22`
+    );
+  }
 }
 
 function ensureMacOsGondolinDefaults(smithRoot: string): void {
@@ -399,6 +408,71 @@ function ensureSecurityDefaults(smithRoot: string): void {
   }
 }
 
+function tryInstallAgentd(smithRoot: string): void {
+  const platform = process.platform;
+  const arch = process.arch;
+  const platformTag = `${platform}-${arch}`;
+  const supported: Record<string, string> = {
+    "linux-x64": "@sibyllinesoft/agentd-linux-x64",
+    "darwin-arm64": "@sibyllinesoft/agentd-darwin-arm64",
+  };
+
+  if (!supported[platformTag]) {
+    console.warn(
+      `[installer] agentd: no pre-built binary for ${platformTag}.\n` +
+      `[installer] Supported platforms: ${Object.keys(supported).join(", ")}.\n` +
+      `[installer] To use agentd on this platform, build from source (see the agentd repo).\n` +
+      `[installer] Skipping agentd install (non-fatal).`
+    );
+    return;
+  }
+
+  try {
+    runCommand(smithRoot, { command: "npm", args: ["install", "-g", "@sibyllinesoft/agentd"] });
+  } catch {
+    console.warn(
+      `\n[installer] agentd installation failed.\n` +
+      `[installer] The platform package ${supported[platformTag]} may not be published yet.\n` +
+      `[installer] This is non-fatal — infrastructure and build steps are unaffected.\n` +
+      `[installer] To resolve:\n` +
+      `[installer]   - Retry later: npm install -g @sibyllinesoft/agentd\n` +
+      `[installer]   - Or build from source (see the agentd repo)\n`
+    );
+    return;
+  }
+
+  // Verify the binary actually works (catches missing platform-specific package)
+  try {
+    execFileSync("agentd", ["--version"], { stdio: "pipe", env: process.env });
+    console.log("[installer] agentd installed and verified.");
+  } catch {
+    console.warn(
+      `\n[installer] agentd package installed but binary not functional on ${platformTag}.\n` +
+      `[installer] The platform package ${supported[platformTag]} may be missing from the registry.\n` +
+      `[installer] This is non-fatal — infrastructure and build steps are unaffected.\n` +
+      `[installer] To resolve: build agentd from source (see the agentd repo).\n`
+    );
+  }
+}
+
+function waitForDockerHealth(smithRoot: string): void {
+  console.log("[installer] Waiting for Docker services to become healthy...");
+  try {
+    execFileSync(
+      "docker",
+      ["compose", "up", "-d", "--wait", "--wait-timeout", "120"],
+      { cwd: smithRoot, stdio: "inherit", env: process.env }
+    );
+    console.log("[installer] All Docker services healthy.");
+  } catch {
+    console.warn(
+      "[installer] Some services may not have reached healthy state within timeout.\n" +
+      "[installer] Check status with: docker compose ps\n" +
+      "[installer] Check logs with: docker compose logs <service>"
+    );
+  }
+}
+
 function runOptionalTunnelE2E(smithRoot: string): void {
   const envPath = join(smithRoot, ".env");
   if (!existsSync(envPath)) {
@@ -462,17 +536,14 @@ function runNonInteractiveBootstrap(
     all: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
-      { command: "docker", args: ["compose", "ps"] },
       { command: "cargo", args: ["build", "--workspace"] },
       { command: "npm", args: ["install"] },
-      { command: "npm", args: ["install", "-g", "@sibyllinesoft/agentd"] },
       { command: "cargo", args: ["check", "--workspace"] },
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     infra: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
-      { command: "docker", args: ["compose", "ps"] },
     ],
     build: [
       { command: "cargo", args: ["build", "--workspace"] },
@@ -490,7 +561,6 @@ function runNonInteractiveBootstrap(
     "30": [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { command: "docker", args: ["compose", "up", "-d"] },
-      { command: "docker", args: ["compose", "ps"] },
     ],
     "40": [
       { command: "cargo", args: ["build", "--workspace"] },
@@ -521,6 +591,18 @@ function runNonInteractiveBootstrap(
 
   for (const spec of plan) {
     runCommand(smithRoot, spec);
+  }
+
+  // Wait for Docker services to become healthy after infra steps
+  const infraSteps = ["all", "infra", "30"];
+  if (infraSteps.includes(normalizedStep)) {
+    waitForDockerHealth(smithRoot);
+  }
+
+  // Install agentd (non-fatal) after npm steps
+  const agentdSteps = ["all"];
+  if (agentdSteps.includes(normalizedStep)) {
+    tryInstallAgentd(smithRoot);
   }
 
   if (normalizedStep === "all" || normalizedStep === "verify" || normalizedStep === "90") {
