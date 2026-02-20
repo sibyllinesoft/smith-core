@@ -154,9 +154,6 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
-      - name: Sync npm package versions
-        run: bash scripts/npm-version-sync.sh "${{ steps.version.outputs.version }}"
-
       - name: Download linux-x64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -171,6 +168,9 @@ jobs:
 
       - name: Restore binary permissions
         run: chmod +x npm/smith-services-*/bin/*
+
+      - name: Sync npm package versions
+        run: bash scripts/npm-version-sync.sh "${{ steps.version.outputs.version }}"
 
       - name: Publish smith-services packages
         if: env.NPM_TOKEN != ''

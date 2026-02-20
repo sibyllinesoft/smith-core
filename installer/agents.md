@@ -128,10 +128,12 @@ Key ports: 4222 (NATS), 5432 (PostgreSQL), 3000 (Grafana), 9200 (MCP Index), 617
 
 ### Node.js Version Management
 
+The repository includes a `.nvmrc` file specifying Node 22. When nvm or fnm is available, `nvm use` or `fnm use` in the repo root will automatically select the correct version.
+
 If `node_22_ok` is `no` in preflight, check `node_version_manager`:
 
-- **`fnm` detected**: Run `fnm install 22 && fnm use 22`, then verify with `node -v`.
-- **`nvm` detected**: Run `. "$NVM_DIR/nvm.sh" && nvm install 22 && nvm use 22`, then verify with `node -v`.
+- **`fnm` detected**: Run `fnm install 22 && fnm use 22`, then verify with `node -v`. Suggest `fnm default 22` to make it persistent.
+- **`nvm` detected**: Run `. "$NVM_DIR/nvm.sh" && nvm install 22 && nvm use 22`, then verify with `node -v`. Suggest `nvm alias default 22` to make it persistent.
 - **`none` detected**: Ask the user which version manager they'd like to install:
   - **fnm** (recommended — single binary, fast):
     ```bash

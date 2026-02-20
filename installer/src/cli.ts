@@ -710,7 +710,7 @@ function runNonInteractiveBootstrap(
     all: [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
       { custom: "docker-compose-up" },
-      { command: "npm", args: ["install"] },
+      { command: "npm", args: ["install", "--no-audit"] },
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     infra: [
@@ -719,13 +719,13 @@ function runNonInteractiveBootstrap(
     ],
     build: [],
     npm: [
-      { command: "npm", args: ["install"] },
+      { command: "npm", args: ["install", "--no-audit"] },
     ],
     verify: [
       { command: "npm", args: ["run", "build", "--workspaces", "--if-present"] },
     ],
     "25": [
-      { command: "npm", args: ["install"] },
+      { command: "npm", args: ["install", "--no-audit"] },
     ],
     "30": [
       { command: "bash", args: ["infra/envoy/certs/generate-certs.sh"] },
@@ -849,9 +849,8 @@ async function main(): Promise<void> {
   ensureMacOsGondolinDefaults(smithRoot);
 
   const securityReport = evaluateInstallerSecurity(smithRoot);
-  printSecurityWarnings(securityReport.sourceFile, securityReport.warnings);
 
-  // Non-interactive mode: run bootstrap commands directly.
+  // Non-interactive mode: run bootstrap commands directly, show warnings after.
   if (args.nonInteractive) {
     try {
       runNonInteractiveBootstrap(smithRoot, args.step, args.force);
@@ -862,6 +861,7 @@ async function main(): Promise<void> {
       }
       process.exit(err.status ?? 1);
     }
+    printSecurityWarnings(securityReport.sourceFile, securityReport.warnings);
     return;
   }
 
