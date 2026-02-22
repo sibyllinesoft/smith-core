@@ -1,6 +1,6 @@
 {
   "name": "@sibyllinesoft/smith-services",
-  "version": "0.1.10",
+  "version": "0.2.1",
   "description": "Pre-built Smith chat and admission binaries",
   "license": "MIT",
   "repository": {
@@ -23,8 +23,8 @@
     "smith-admission": "bin/smith-admission"
   },
   "optionalDependencies": {
-    "@sibyllinesoft/smith-services-linux-x64": "0.1.10",
-    "@sibyllinesoft/smith-services-darwin-arm64": "0.1.10"
+    "@sibyllinesoft/smith-services-linux-x64": "0.2.1",
+    "@sibyllinesoft/smith-services-darwin-arm64": "0.2.1"
   },
   "publishConfig": {
     "access": "public",
