@@ -22,7 +22,7 @@ describe("parseArgs", () => {
     expect(args).toEqual({
       nonInteractive: false,
       provider: "anthropic",
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5-20250929",
       thinkingLevel: "medium",
       force: false,
       help: false,
