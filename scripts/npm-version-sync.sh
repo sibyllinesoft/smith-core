@@ -17,12 +17,13 @@ if [ -z "$VERSION" ]; then
   exit 1
 fi
 
-echo "Syncing smith-services npm packages to version $VERSION"
+echo "Syncing npm packages to version $VERSION"
 
 PACKAGES=(
   npm/smith-services
   npm/smith-services-linux-x64
   npm/smith-services-darwin-arm64
+  installer
 )
 
 for pkg in "${PACKAGES[@]}"; do
@@ -34,6 +35,14 @@ for pkg in "${PACKAGES[@]}"; do
     echo "  $pkg -> $VERSION"
   fi
 done
+
+# Update root package.json version
+if [ -f "package.json" ]; then
+  tmp=$(mktemp)
+  sed "s/\"version\": \"[^\"]*\"/\"version\": \"$VERSION\"/" "package.json" > "$tmp"
+  mv "$tmp" "package.json"
+  echo "  package.json -> $VERSION"
+fi
 
 # Update optionalDependencies versions in the root package
 ROOT_PKG="npm/smith-services/package.json"
