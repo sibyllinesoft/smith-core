@@ -26,7 +26,7 @@ export interface InstallerOptions {
   smithRoot: string;
   /** LLM provider (default: anthropic) */
   provider?: KnownProvider;
-  /** Model ID (default: claude-sonnet-4-20250514) */
+  /** Model ID (default: claude-sonnet-4-5-20250929) */
   model?: string;
   /** Thinking level (default: medium) */
   thinkingLevel?: ThinkingLevel;
@@ -59,7 +59,7 @@ export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {
     nonInteractive: false,
     provider: "anthropic" as KnownProvider,
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5-20250929",
     thinkingLevel: "medium" as ThinkingLevel,
     force: false,
     help: false,

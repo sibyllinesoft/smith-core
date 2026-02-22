@@ -58,3 +58,28 @@ smith-services and agentd are supplementary components — their absence does no
 ## Notes
 
 This is the final gate for local release-readiness confidence.
+
+## Wrapup Output
+
+After verification passes, display the following information to the user:
+
+### MCP Index Access
+
+```bash
+# View the MCP Index API token
+grep MCP_INDEX_API_TOKEN .env
+
+# MCP Index endpoint
+# http://localhost:9200
+
+# Test MCP Index connectivity
+curl -H "Authorization: Bearer $(grep MCP_INDEX_API_TOKEN .env | cut -d= -f2)" http://localhost:9200/tools
+```
+
+### Future Validation
+
+To re-validate the installation at any time:
+
+```bash
+bash scripts/smith-check.sh
+```

@@ -40,7 +40,7 @@ export async function createInstallerSession(opts: InstallerOptions) {
   await loader.reload();
 
   const provider = opts.provider ?? ("anthropic" as const);
-  const modelId = opts.model ?? "claude-sonnet-4-20250514";
+  const modelId = opts.model ?? "claude-sonnet-4-5-20250929";
 
   const { session } = await createAgentSession({
     cwd: opts.smithRoot,

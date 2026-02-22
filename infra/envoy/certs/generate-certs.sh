@@ -74,6 +74,11 @@ openssl x509 -req -sha256 -in "$OUT/client.csr" \
   -CA "$OUT/ca.crt" -CAkey "$OUT/ca.key" -CAcreateserial \
   -out "$OUT/client.crt" -days "$DAYS"
 
+echo "==> Generating client PKCS#12 bundle (for browser import)"
+openssl pkcs12 -export -out "$OUT/client.p12" \
+  -inkey "$OUT/client.key" -in "$OUT/client.crt" \
+  -certfile "$OUT/ca.crt" -passout pass:smith-dev
+
 chmod 644 "$OUT"/*.key
 rm -f "$OUT"/*.csr "$OUT"/*.ext "$OUT"/*.srl
 

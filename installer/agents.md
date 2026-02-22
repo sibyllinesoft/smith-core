@@ -50,6 +50,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 # infra (pulls pre-built images from ghcr.io; falls back to local build)
+# generate-certs.sh also produces client.p12 for browser mTLS auth
 bash infra/envoy/certs/generate-certs.sh
 docker compose up -d || \
   docker compose -f docker-compose.yaml -f docker-compose.build.yml up -d --build
@@ -98,6 +99,23 @@ Confirm these outcomes:
 - Any warnings or non-blocking issues are reported clearly.
 - Security posture warnings are surfaced when default secrets are present or private-network indicators are missing.
 - OPA server healthy and policies loaded from PostgreSQL (when policy step is run).
+- When Cargo is available, optionally run `cargo check --workspace` as additional validation.
+- Run `bash scripts/smith-check.sh` as the final validation step to confirm the installation is healthy.
+
+## Final Summary
+
+After all steps complete, display:
+
+1. **MCP Index access commands:**
+   ```bash
+   grep MCP_INDEX_API_TOKEN .env
+   curl -H "Authorization: Bearer $(grep MCP_INDEX_API_TOKEN .env | cut -d= -f2)" http://localhost:9200/tools
+   ```
+2. **Browser mTLS:** If `infra/envoy/certs/generated/client.p12` exists, show how to import it:
+   ```
+   Import infra/envoy/certs/generated/client.p12 into your browser (password: smith-dev)
+   ```
+3. **Validation command:** `bash scripts/smith-check.sh`
 
 ## Failure Recovery
 
@@ -132,8 +150,8 @@ The repository includes a `.nvmrc` file specifying Node 22. When nvm or fnm is a
 
 If `node_22_ok` is `no` in preflight, check `node_version_manager`:
 
-- **`fnm` detected**: Run `fnm install 22 && fnm use 22`, then verify with `node -v`. Suggest `fnm default 22` to make it persistent.
-- **`nvm` detected**: Run `. "$NVM_DIR/nvm.sh" && nvm install 22 && nvm use 22`, then verify with `node -v`. Suggest `nvm alias default 22` to make it persistent.
+- **`fnm` detected**: Run `fnm install 22 && fnm use 22 && fnm default 22`, then verify with `node -v`. The `fnm default 22` step is critical — without it, the version reverts on new shells.
+- **`nvm` detected**: Run `. "$NVM_DIR/nvm.sh" && nvm install 22 && nvm use 22 && nvm alias default 22`, then verify with `node -v`. The `nvm alias default 22` step is critical — without it, the version reverts on new shells.
 - **`none` detected**: Ask the user which version manager they'd like to install:
   - **fnm** (recommended — single binary, fast):
     ```bash

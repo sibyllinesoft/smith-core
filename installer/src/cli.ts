@@ -789,7 +789,7 @@ Usage: smith-install [options]
 Options:
   --non-interactive    Run bootstrap commands directly (no TUI)
   --provider <name>    LLM provider (default: anthropic)
-  --model <id>         Model ID (default: claude-sonnet-4-20250514)
+  --model <id>         Model ID (default: claude-sonnet-4-5-20250929)
   --thinking <level>   Thinking level: none, low, medium, high (default: medium)
   --step <name>        Run one step: all, infra, build, npm, verify, policy (also 25/30/40/90)
   --force              Recreate infrastructure before running infra/all
