@@ -41,6 +41,19 @@ impl ChatBridge {
             .collect::<Vec<_>>()
     }
 
+    pub async fn trigger_typing(&self, adapter_id: &str, channel_id: &str) -> Result<()> {
+        let adapter = self
+            .adapters
+            .read()
+            .await
+            .get(adapter_id)
+            .cloned()
+            .ok_or_else(|| ChatBridgeError::AdapterNotFound {
+                adapter: adapter_id.to_string(),
+            })?;
+        adapter.trigger_typing(channel_id).await
+    }
+
     pub async fn send(&self, adapter_id: &str, message: OutgoingMessage) -> Result<SendReceipt> {
         let adapter = self
             .adapters

@@ -358,8 +358,16 @@ async fn handle_message_create(
         is_bot: false,
     };
 
+    // Resolve human-readable names for channel and guild so the agent has context.
+    let channel_name = fetch_channel_name(http, &cli.bot_token, channel_id).await;
+    let guild_name = if !guild_id.is_empty() {
+        fetch_guild_name(http, &cli.bot_token, guild_id).await
+    } else {
+        None
+    };
+
     let history_len = thread_history.len();
-    let envelope = build_envelope(
+    let mut envelope = build_envelope(
         "discord",
         guild_id,
         channel_id,
@@ -371,6 +379,14 @@ async fn handle_message_create(
         attachments,
         thread_history,
     );
+
+    // Inject resolved names into the envelope for the daemon/pi-bridge
+    if let Some(name) = &channel_name {
+        envelope["channel_name"] = json!(name);
+    }
+    if let Some(name) = &guild_name {
+        envelope["team_name"] = json!(name);
+    }
 
     let payload = serde_json::to_vec(&envelope)?;
 
@@ -487,6 +503,56 @@ async fn read_next_text(
         }
     }
     Err(anyhow::anyhow!("WebSocket stream ended"))
+}
+
+/// Fetch a channel's name from the Discord API.
+async fn fetch_channel_name(
+    http: &reqwest::Client,
+    bot_token: &str,
+    channel_id: &str,
+) -> Option<String> {
+    let url = format!("https://discord.com/api/v10/channels/{channel_id}");
+    let resp = http
+        .get(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    // DM channels have type 1 and no name — use the recipients list
+    let channel_type = body.get("type").and_then(|v| v.as_u64()).unwrap_or(0);
+    if channel_type == 1 {
+        // DM channel
+        return Some("DM".to_string());
+    }
+    body.get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Fetch a guild's name from the Discord API.
+async fn fetch_guild_name(
+    http: &reqwest::Client,
+    bot_token: &str,
+    guild_id: &str,
+) -> Option<String> {
+    let url = format!("https://discord.com/api/v10/guilds/{guild_id}");
+    let resp = http
+        .get(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    body.get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
 #[derive(Debug, Deserialize)]

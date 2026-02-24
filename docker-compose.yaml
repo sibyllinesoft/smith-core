@@ -65,8 +65,8 @@ services:
     image: redis:7.2-alpine
     container_name: smith-redis
     hostname: redis
-    expose:
-      - "6379"
+    ports:
+      - "127.0.0.1:6379:6379"
     volumes:
       - ${SMITH_REDIS_DATA_DIR:-./data/redis}:/data
     networks:
@@ -173,12 +173,14 @@ services:
       - "--config-file=/etc/opa/config.yaml"
       - "--disable-telemetry"
       - "/etc/opa/policies/"
+    ports:
+      - "127.0.0.1:8181:8181"
     expose:
-      - "8181"
       - "9292"
     volumes:
       - ./infra/opa/opa-config.yaml:/etc/opa/config.yaml:ro
       - ./infra/opa/policy/:/etc/opa/policies/:ro
+      - opa_data:/var/opa/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -199,6 +201,7 @@ services:
     hostname: smith-gateway
     ports:
       - "127.0.0.1:6173:10443"
+      - "127.0.0.1:6174:10070"   # egress forward proxy
       - "127.0.0.1:9901:9901"
     volumes:
       - ./infra/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
@@ -229,7 +232,7 @@ services:
     hostname: session-recorder
     environment:
       - NATS_URL=nats://nats:4222
-      - SESSION_RECORDER_PG=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+      - SESSION_RECORDER_PG=postgresql://smith:${POSTGRES_PASSWORD:-smith-dev}@postgres:5432/smith
     depends_on:
       nats:
         condition: service_started
@@ -301,7 +304,7 @@ services:
     expose:
       - "9100"
     environment:
-      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith?options=-c%20app.current_user_role%3Dadmin
       - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
@@ -329,7 +332,7 @@ services:
     expose:
       - "9100"
     environment:
-      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith?options=-c%20app.current_user_role%3Dadmin
       - NATS_URL=nats://nats:4222
       - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
@@ -350,6 +353,198 @@ services:
       retries: 5
       start_period: 30s
 
+  mcp-github:
+    build:
+      context: ./infra/mcp-servers/github
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-github
+    hostname: mcp-github
+    expose:
+      - "9100"
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-google:
+    build:
+      context: ./infra/mcp-servers/google
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-google
+    hostname: mcp-google
+    expose:
+      - "9100"
+    environment:
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    volumes:
+      - mcp_credentials:/credentials:ro
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-google-analytics:
+    build:
+      context: ./infra/mcp-servers/google-analytics
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-google-analytics
+    hostname: mcp-google-analytics
+    expose:
+      - "9100"
+    environment:
+      - GA4_PROPERTY_ID=${GA4_PROPERTY_ID:-}
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    volumes:
+      - mcp_credentials:/credentials:ro
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-notion:
+    build:
+      context: ./infra/mcp-servers/notion
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-notion
+    hostname: mcp-notion
+    expose:
+      - "9100"
+    environment:
+      - OPENAPI_MCP_HEADERS=${OPENAPI_MCP_HEADERS:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-slack:
+    build:
+      context: ./infra/mcp-servers/slack
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-slack
+    hostname: mcp-slack
+    expose:
+      - "9100"
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_TEAM_ID=${SLACK_TEAM_ID:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-twitter:
+    build:
+      context: ./infra/mcp-servers/twitter
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-twitter
+    hostname: mcp-twitter
+    expose:
+      - "9100"
+    environment:
+      - API_KEY=${TWITTER_API_KEY:-}
+      - API_SECRET_KEY=${TWITTER_API_SECRET_KEY:-}
+      - ACCESS_TOKEN=${TWITTER_ACCESS_TOKEN:-}
+      - ACCESS_TOKEN_SECRET=${TWITTER_ACCESS_TOKEN_SECRET:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  mcp-discord:
+    build:
+      context: ./infra/mcp-servers/discord
+      args:
+        SMITH_VERSION: ${SMITH_VERSION:-latest}
+    container_name: smith-mcp-discord
+    hostname: mcp-discord
+    expose:
+      - "9100"
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
+    depends_on:
+      mcp-sidecar:
+        condition: service_completed_successfully
+    networks:
+      - smith
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --header=\"x-smith-token: $${MCP_SIDECAR_API_TOKEN}\" -qO- http://127.0.0.1:9100/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   # ── MCP Index (Tool Catalog) ────────────────────────────────────────────
   mcp-index:
     image: ghcr.io/sibyllinesoft/mcp-index:${SMITH_VERSION:-latest}
@@ -358,18 +553,36 @@ services:
     ports:
       - "127.0.0.1:9200:9200"
     environment:
-      - MCP_INDEX_UPSTREAMS=postgres=http://mcp-postgres:9100,users=http://mcp-users:9100,cron=http://mcp-cron:9100
+      - MCP_INDEX_UPSTREAMS=postgres=http://mcp-postgres:9100,users=http://mcp-users:9100,cron=http://mcp-cron:9100,github=http://mcp-github:9100,google=http://mcp-google:9100,google-analytics=http://mcp-google-analytics:9100,notion=http://mcp-notion:9100,slack=http://mcp-slack:9100,twitter=http://mcp-twitter:9100,discord=http://mcp-discord:9100
       - MCP_INDEX_POLL_INTERVAL=30
       - MCP_INDEX_BASE_URL=http://localhost:9200
       - MCP_INDEX_API_TOKEN=${MCP_INDEX_API_TOKEN:-}
       - MCP_INDEX_UPSTREAM_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
       - MCP_INDEX_ALLOW_UNAUTHENTICATED=${MCP_INDEX_ALLOW_UNAUTHENTICATED:-false}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+    volumes:
+      - mcp_credentials:/credentials:rw
     depends_on:
       mcp-postgres:
         condition: service_started
       mcp-users:
         condition: service_started
       mcp-cron:
+        condition: service_started
+      mcp-github:
+        condition: service_started
+      mcp-google:
+        condition: service_started
+      mcp-google-analytics:
+        condition: service_started
+      mcp-notion:
+        condition: service_started
+      mcp-slack:
+        condition: service_started
+      mcp-twitter:
+        condition: service_started
+      mcp-discord:
         condition: service_started
     networks:
       - smith

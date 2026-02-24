@@ -781,6 +781,37 @@ function runNonInteractiveBootstrap(
   }
 }
 
+function printPostInstallSummary(smithRoot: string): void {
+  const envPath = join(smithRoot, ".env");
+  if (!existsSync(envPath)) return;
+
+  const vars = parseEnvFile(envPath);
+  const mcpToken = (vars.MCP_INDEX_API_TOKEN ?? "").trim();
+  const mcpPort = (vars.MCP_INDEX_PORT ?? "9200").trim();
+
+  console.log(`
+┌─────────────────────────────────────────────────────────┐
+│  Smith Core — Ready                                     │
+├─────────────────────────────────────────────────────────┤`);
+
+  if (mcpToken) {
+    console.log(`│                                                         │
+│  MCP Index token:                                       │
+│    ${mcpToken.padEnd(52)}│
+│                                                         │
+│  MCP endpoint:                                          │
+│    http://localhost:${mcpPort}/tools${" ".repeat(Math.max(0, 35 - mcpPort.length))}│`);
+  }
+
+  console.log(`│                                                         │
+│  Quick commands:                                        │
+│    smith token        Print your MCP Index token        │
+│    smith pair         Generate a chat pairing code      │
+│    smith status       Show installation overview        │
+└─────────────────────────────────────────────────────────┘
+`);
+}
+
 function printHelp(): void {
   console.log(`smith-install — AI-guided Smith Core installer
 
@@ -862,6 +893,7 @@ async function main(): Promise<void> {
       process.exit(err.status ?? 1);
     }
     printSecurityWarnings(securityReport.sourceFile, securityReport.warnings);
+    printPostInstallSummary(smithRoot);
     return;
   }
 

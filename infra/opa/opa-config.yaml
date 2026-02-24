@@ -1,6 +1,6 @@
 # OPA management server configuration for the Smith observability stack.
 # The server exposes the policy and data APIs on port 8181.
-# The envoy_ext_authz_grpc plugin listens on port 9292 for Envoy ext_authz checks.
+# Envoy ext_authz is handled via the REST API (gateway.rego policy).
 labels:
   app: smith-observability
   component: opa-management
@@ -14,8 +14,6 @@ plugins:
   envoy_ext_authz_grpc:
     addr: ":9292"
     path: smith/envoy/authz/allow
-    dry-run: false
-    enable-reflection: true
 
 decision_logs:
   console: true

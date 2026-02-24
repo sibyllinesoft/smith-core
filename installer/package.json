@@ -14,7 +14,8 @@
   },
   "type": "module",
   "bin": {
-    "smith-install": "./dist/cli.js"
+    "smith-install": "./dist/cli.js",
+    "smith": "./dist/smith.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

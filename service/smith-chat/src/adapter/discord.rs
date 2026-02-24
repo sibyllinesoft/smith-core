@@ -232,6 +232,22 @@ impl ChatAdapter for DiscordAdapter {
         Ok(result)
     }
 
+    async fn trigger_typing(&self, channel_id: &str) -> Result<()> {
+        let url = format!("{DISCORD_API_BASE}/channels/{channel_id}/typing");
+        let response = self
+            .client
+            .post(&url)
+            .header("Authorization", self.bot_auth())
+            .header("Content-Length", "0")
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            let status = response.status();
+            warn!(%status, channel_id, "Discord trigger typing failed");
+        }
+        Ok(())
+    }
+
     async fn send_message(&self, message: OutgoingMessage) -> Result<SendReceipt> {
         let url = format!(
             "{DISCORD_API_BASE}/channels/{}/messages",

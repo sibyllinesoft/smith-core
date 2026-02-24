@@ -2,6 +2,7 @@
 #
 # Listeners:
 #   10443  - frontend gateway (mTLS required)
+#   10070  - egress forward proxy (CONNECT-based, OPA-authorized)
 #    4317  - OTLP gRPC ingestion (plaintext, internal)
 #    4318  - OTLP HTTP ingestion (plaintext, internal)
 
@@ -140,6 +141,56 @@ static_resources:
                 validation_context:
                   trusted_ca:
                     filename: /etc/envoy/certs/ca.crt
+
+    # Egress forward proxy (CONNECT-based, OPA-authorized)
+    - name: egress_forward_proxy
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10070
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: egress
+                codec_type: AUTO
+                upgrade_configs:
+                  - upgrade_type: CONNECT
+                http_filters:
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_authz
+                        timeout: 1s
+                      failure_mode_allow: false
+                      status_on_error:
+                        code: 503
+                  - name: envoy.filters.http.dynamic_forward_proxy
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+                      dns_cache_config:
+                        name: egress_dns_cache
+                        dns_lookup_family: V4_ONLY
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+                route_config:
+                  name: egress_routes
+                  virtual_hosts:
+                    - name: egress
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            connect_matcher: {}
+                          route:
+                            cluster: egress_dynamic_forward_proxy
+                            upgrade_configs:
+                              - upgrade_type: CONNECT
+                                connect_config: {}
 
     # OTLP gRPC ingestion (internal)
     - name: otlp_grpc_ingestion
@@ -289,6 +340,16 @@ static_resources:
                     socket_address:
                       address: opa-management
                       port_value: 9292
+
+    - name: egress_dynamic_forward_proxy
+      lb_policy: CLUSTER_PROVIDED
+      cluster_type:
+        name: envoy.clusters.dynamic_forward_proxy
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+          dns_cache_config:
+            name: egress_dns_cache
+            dns_lookup_family: V4_ONLY
 
     - name: agentd_grpc
       type: STRICT_DNS

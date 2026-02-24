@@ -6,6 +6,7 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
+use tokio::time::timeout;
 
 use crate::mcp_client::McpClient;
 use crate::middleware::config::MiddlewareConfig;
@@ -148,7 +149,20 @@ async fn call_tool(
         }
     }
 
-    let mut result = match client.call_tool(&name, arguments).await {
+    let call_future = client.call_tool(&name, arguments);
+    let call_result = if let Some(dur) = state.call_timeout {
+        match timeout(dur, call_future).await {
+            Ok(inner) => inner,
+            Err(_) => return Err(AppError::McpServerError(format!(
+                "tool call '{name}' timed out after {}s",
+                dur.as_secs()
+            ))),
+        }
+    } else {
+        call_future.await
+    };
+
+    let mut result = match call_result {
         Ok(result) => result,
         Err(e) => {
             if e.downcast_ref::<crate::mcp_client::JsonRpcError>()

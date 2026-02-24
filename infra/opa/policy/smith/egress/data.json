@@ -1,0 +1,8 @@
+{
+  "default": "allow",
+  "domain_denylist": {},
+  "domain_allowlist": {
+    "api.anthropic.com": true,
+    "api.z.ai": true
+  }
+}

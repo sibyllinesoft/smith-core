@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::oauth::OAuthState;
+use crate::search::ToolIndex;
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -43,8 +44,11 @@ pub struct ToolEntry {
 
 pub struct IndexState {
     pub servers: RwLock<Vec<ServerEntry>>,
+    pub search_index: RwLock<ToolIndex>,
     pub upstreams: Vec<Upstream>,
     pub client: reqwest::Client,
+    /// Separate client for tool call proxying (longer timeout than poll client).
+    pub call_client: reqwest::Client,
     pub oauth: Arc<OAuthState>,
     pub base_url: String,
     pub api_token: Option<String>,
@@ -122,7 +126,16 @@ async fn poll_all(client: &reqwest::Client, state: &IndexState) {
         entries.push(entry);
     }
 
+    // Build full-text search index from all healthy tools
+    let all_tools: Vec<ToolEntry> = entries
+        .iter()
+        .filter(|s| s.healthy)
+        .flat_map(|s| s.tools.iter().cloned())
+        .collect();
+    let new_index = ToolIndex::build(all_tools);
+
     *state.servers.write().await = entries;
+    *state.search_index.write().await = new_index;
 }
 
 async fn poll_one(

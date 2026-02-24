@@ -220,7 +220,7 @@ export function buildSystemPrompt(opts: InstallerOptions): string {
   return prompt;
 }
 
-function parseEnvFile(path: string): Record<string, string> {
+export function parseEnvFile(path: string): Record<string, string> {
   const vars: Record<string, string> = {};
   const content = readFileSync(path, "utf8");
   for (const rawLine of content.split("\n")) {
