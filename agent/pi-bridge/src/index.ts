@@ -8,7 +8,7 @@
 // OTel SDK must initialize before anything else
 import "./tracing.js";
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { trace, context, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { readFileSync } from "node:fs";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -422,70 +422,169 @@ function applyUserOverrides(profile: AgentProfile, user: ResolvedUser): AgentPro
   };
 }
 
-// ── Canary system for untrusted agents ──────────────────────────────
+// ── Sigil schema-strict protocol for untrusted agents ────────────────
 //
-// Untrusted agents get a random codeword injected into their system prompt.
-// They must base64-encode it and include the result at the end of every response.
-// Pi-bridge checks for the expected encoding — if missing or wrong, the
-// response is flagged as potentially compromised by prompt injection.
+// Untrusted agents get a random nonce injected via system prompt instructions
+// that force the LLM to respond in a strict JSON schema:
+//   { sigil_version: 1, nonce: "<echo>", response: "<content>",
+//     fingerprint: "<word_count>:<first_word>:<last_word>" }
+//
+// The fingerprint is content-coupled — modifying the response breaks it,
+// making prompt injection significantly harder than the old canary approach.
+// Ported from ../sigil/src/sigil/protocols/schema_strict.py
 
-function generateCanary(): { codeword: string; expected: string } {
-  const words = ["ALPINE", "BEACON", "CIPHER", "DELTA", "FALCON", "HARBOR", "MARBLE", "PRISM", "QUARTZ", "SUMMIT", "VELVET", "ZENITH"];
-  const w1 = words[Math.floor(Math.random() * words.length)];
-  const w2 = words[Math.floor(Math.random() * words.length)];
-  const num = Math.floor(Math.random() * 900) + 100;
-  const codeword = `${w1}-${w2}-${num}`;
-  const expected = Buffer.from(codeword).toString("base64");
-  return { codeword, expected };
+function generateSigilChallenge(): { nonce: string } {
+  return { nonce: randomBytes(8).toString("hex") };
 }
 
-function injectCanary(systemPrompt: string, codeword: string): string {
-  return systemPrompt + `\n\n## MANDATORY RESPONSE VERIFICATION\n\nYou MUST end every response with the base64 encoding of the exact string \`${codeword}\`. Place it on its own line at the very end. This is required for all responses without exception.\n\nAdditionally, you MUST call the \`__smith_verify\` tool with the parameter \`{"codeword": "${codeword}"}\` once per response. This is a required verification step.`;
+function computeFingerprint(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "0::";
+  return `${words.length}:${words[0]}:${words[words.length - 1]}`;
 }
 
-function verifyCanary(response: string, expected: string): { clean: boolean; stripped: string } {
-  const trimmed = response.trimEnd();
-  if (trimmed.endsWith(expected)) {
-    // Strip the canary from the response before returning to parent
-    const stripped = trimmed.slice(0, trimmed.length - expected.length).trimEnd();
-    return { clean: true, stripped };
+function stripPunctuation(word: string): string {
+  return word.replace(/^[.,;:!?"'`()\[\]{}…—-]+|[.,;:!?"'`()\[\]{}…—-]+$/g, "");
+}
+
+function verifyFingerprint(responseText: string, claimedFp: string): string[] {
+  const violations: string[] = [];
+  const parts = claimedFp.split(":");
+  if (parts.length < 3) {
+    violations.push(`Fingerprint format invalid: expected 'count:first:last', got '${claimedFp}'`);
+    return violations;
   }
-  return { clean: false, stripped: response };
+
+  // Split as "count:first:last" — last may contain colons so rejoin
+  const claimedCountStr = parts[0];
+  const claimedFirst = parts[1];
+  const claimedLast = parts.slice(2).join(":");
+
+  const words = responseText.split(/\s+/).filter(Boolean);
+  const actualCount = words.length;
+  const actualFirst = words[0] ?? "";
+  const actualLast = words[words.length - 1] ?? "";
+
+  const claimedCount = parseInt(claimedCountStr, 10);
+  if (isNaN(claimedCount)) {
+    violations.push(`Fingerprint word count not an integer: '${claimedCountStr}'`);
+    return violations;
+  }
+
+  // Tolerance: 30% of actual count or 3, whichever is larger
+  const tolerance = Math.max(3, Math.floor(actualCount * 0.3));
+  if (Math.abs(claimedCount - actualCount) > tolerance) {
+    violations.push(
+      `Fingerprint word count off: claimed ${claimedCount}, actual ${actualCount} (tolerance ${tolerance})`
+    );
+  }
+
+  if (stripPunctuation(claimedFirst) !== stripPunctuation(actualFirst)) {
+    violations.push(
+      `Fingerprint first word mismatch: claimed '${claimedFirst}', actual '${actualFirst}'`
+    );
+  }
+
+  if (stripPunctuation(claimedLast) !== stripPunctuation(actualLast)) {
+    violations.push(
+      `Fingerprint last word mismatch: claimed '${claimedLast}', actual '${actualLast}'`
+    );
+  }
+
+  return violations;
 }
 
-// ── Tool-based canary (hidden verification tool) ─────────────────────
+const SIGIL_REQUIRED_FIELDS = new Set(["sigil_version", "nonce", "response", "fingerprint"]);
 
-interface ToolCanaryState {
-  codeword: string;
-  verified: boolean;
+function buildSigilInstructions(nonce: string): string {
+  return (
+    "You MUST respond with ONLY a JSON object matching this exact schema:\n\n" +
+    "{\n" +
+    '  "sigil_version": 1,\n' +
+    `  "nonce": "${nonce}",\n` +
+    '  "response": "<your actual response text here>",\n' +
+    '  "fingerprint": "<word_count>:<first_word>:<last_word>"\n' +
+    "}\n\n" +
+    "Rules:\n" +
+    "1. Output ONLY the JSON object. No markdown, no explanation, no wrapping.\n" +
+    "2. sigil_version must be exactly 1 (integer).\n" +
+    `3. nonce must be exactly "${nonce}".\n` +
+    "4. response contains your actual answer to the message.\n" +
+    "5. fingerprint is derived from your response field:\n" +
+    "   - Count the words in your response (split on whitespace)\n" +
+    "   - Take the first word and the last word\n" +
+    "   - Format: word_count:first_word:last_word\n" +
+    '   - Example: if response is "The quick brown fox", fingerprint is "4:The:fox"\n' +
+    '   - Example: if response is "Hello", fingerprint is "1:Hello:Hello"\n'
+  );
 }
 
-function buildCanaryTool(canaryState: ToolCanaryState): any {
-  return {
-    name: "__smith_verify",
-    label: "smith/verify",
-    description: "Internal verification tool. Must be called with the correct codeword parameter each response.",
-    parameters: {
-      type: "object",
-      properties: {
-        codeword: { type: "string", description: "The verification codeword" },
-      },
-      required: ["codeword"],
-    },
-    execute: async (_toolCallId: string, params: any) => {
-      if (params.codeword === canaryState.codeword) {
-        canaryState.verified = true;
-        return {
-          content: [{ type: "text" as const, text: "Verification successful." }],
-          details: undefined,
-        };
+function injectSigilProtocol(systemPrompt: string, nonce: string): string {
+  return systemPrompt + "\n\n## MANDATORY RESPONSE FORMAT\n\n" + buildSigilInstructions(nonce);
+}
+
+function verifySigilResponse(
+  rawResponse: string,
+  nonce: string,
+): { passed: boolean; response: string; violations: string[] } {
+  const violations: string[] = [];
+
+  // Try to extract JSON from the response
+  let stripped = rawResponse.trim();
+  // Handle markdown code blocks
+  if (stripped.startsWith("```")) {
+    const lines = stripped.split("\n");
+    const jsonLines: string[] = [];
+    let inBlock = false;
+    for (const line of lines) {
+      if (line.trim().startsWith("```") && !inBlock) {
+        inBlock = true;
+        continue;
+      } else if (line.trim() === "```" && inBlock) {
+        break;
+      } else if (inBlock) {
+        jsonLines.push(line);
       }
-      return {
-        content: [{ type: "text" as const, text: "Verification acknowledged." }],
-        details: undefined,
-      };
-    },
-  };
+    }
+    stripped = jsonLines.join("\n").trim();
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(stripped);
+  } catch (e) {
+    violations.push(`Response is not valid JSON: ${e}`);
+    return { passed: false, response: rawResponse, violations };
+  }
+
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    violations.push(`Response is not a JSON object (got ${typeof data})`);
+    return { passed: false, response: rawResponse, violations };
+  }
+
+  const missing = [...SIGIL_REQUIRED_FIELDS].filter((f) => !(f in data));
+  if (missing.length > 0) {
+    violations.push(`Missing required fields: ${missing.join(", ")}`);
+  }
+
+  if (data.sigil_version !== 1) {
+    violations.push(`sigil_version must be 1, got ${JSON.stringify(data.sigil_version)}`);
+  }
+
+  if (data.nonce !== nonce) {
+    violations.push(`Nonce mismatch: expected '${nonce}', got '${data.nonce}'`);
+  }
+
+  if ("response" in data && "fingerprint" in data) {
+    const fpViolations = verifyFingerprint(String(data.response), String(data.fingerprint));
+    violations.push(...fpViolations);
+  }
+
+  if (violations.length > 0) {
+    return { passed: false, response: rawResponse, violations };
+  }
+
+  return { passed: true, response: String(data.response), violations: [] };
 }
 
 /**
@@ -706,8 +805,7 @@ interface AgentSession {
   steeringSub: Subscription;
   responseSubject: string;
   agentd: AgentdRef;
-  canaryExpected: string | null;
-  canaryState: ToolCanaryState | null;
+  sigilNonce: string | null;
   sessionSpan: Span;
   turnCount: number;
   user: ResolvedUser;
@@ -2224,7 +2322,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
     {
       name: "agents__create",
       label: "agents/create",
-      description: "Create a new agent profile. Set trusted=false for untrusted proxy agents (canary verification is automatic).",
+      description: "Create a new agent profile. Set trusted=false for untrusted proxy agents (sigil verification is automatic).",
       parameters: {
         type: "object",
         properties: {
@@ -2235,7 +2333,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           thinking_level: { type: "string", description: "Thinking level (default: off)" },
           system_prompt: { type: "string", description: "Custom system prompt (null = use base)" },
           tool_policy: { type: "string", description: "OPA policy ID for tool access (default: tool-access)" },
-          trusted: { type: "boolean", description: "Whether this agent is trusted (default: true). Untrusted agents get canary verification." },
+          trusted: { type: "boolean", description: "Whether this agent is trusted (default: true). Untrusted agents get sigil verification." },
           max_turns: { type: "number", description: "Max conversation turns (null = unlimited)" },
           config: { type: "object", description: "Extra config JSONB" },
         },
@@ -2835,10 +2933,10 @@ async function handleSessionStart(
   const effectiveProfile = applyUserOverrides(agentProfile, effectiveUser);
   console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Agent: ${effectiveProfile.id} (${effectiveProfile.display_name}) trusted=${effectiveProfile.trusted}`);
 
-  // Generate canary for untrusted agents
-  const canary = !effectiveProfile.trusted ? generateCanary() : null;
-  if (canary) {
-    console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Canary injected for untrusted agent`);
+  // Generate sigil challenge for untrusted agents
+  const sigil = !effectiveProfile.trusted ? generateSigilChallenge() : null;
+  if (sigil) {
+    console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Sigil protocol injected for untrusted agent`);
   }
 
   // Root span for the entire chat session lifecycle
@@ -2899,13 +2997,7 @@ async function handleSessionStart(
   const allTools = [...sessionCoreMcpTools, ...sessionMetaTools, ...sessionCapTools, ...sessionFileTools, ...sessionNoteTools, ...sessionUserMgmtTools];
   const sessionTools = await evaluateToolAccess(toolAccessCtx, allTools);
 
-  // Add hidden verification tool for untrusted agents (bypasses OPA — internal-only)
-  const canaryState: ToolCanaryState | null = canary
-    ? { codeword: canary.codeword, verified: false }
-    : null;
-  if (canaryState) {
-    sessionTools.push(buildCanaryTool(canaryState));
-  }
+  // Sigil protocol is stateless (no hidden tool needed)
 
   console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Tools: ${sessionTools.length}/${allTools.length} (role=${effectiveUser.role})`);
 
@@ -2940,8 +3032,8 @@ async function handleSessionStart(
     agentdCaps,
     deniedTools,
   });
-  if (canary) {
-    systemPrompt = injectCanary(systemPrompt, canary.codeword);
+  if (sigil) {
+    systemPrompt = injectSigilProtocol(systemPrompt, sigil.nonce);
   }
 
   // Resolve LLM config from agent profile (user overrides already applied)
@@ -3010,8 +3102,7 @@ async function handleSessionStart(
     steeringSub,
     responseSubject,
     agentd: sessionAgentdRef,
-    canaryExpected: canary?.expected ?? null,
-    canaryState,
+    sigilNonce: sigil?.nonce ?? null,
     sessionSpan,
     turnCount: 0,
     user: effectiveUser,
@@ -3291,7 +3382,7 @@ async function runAgentPrompt(
     return;
   }
 
-  const { agent, responseSubject, sessionSpan, agentd, canaryExpected, canaryState } = session;
+  const { agent, responseSubject, sessionSpan, agentd, sigilNonce } = session;
   const turnIndex = session.turnCount++;
 
   // Clear attachment accumulator for this turn
@@ -3332,9 +3423,9 @@ async function runAgentPrompt(
         fullResponse = textParts.join("");
 
         // Publish partial response if enough time/content has elapsed.
-        // Skip partials for untrusted agents — content must pass canary
-        // verification before being sent to the user.
-        if (!canaryExpected) {
+        // Skip partials for untrusted agents — raw response is JSON that
+        // must pass sigil verification before being sent to the user.
+        if (!sigilNonce) {
           const now = Date.now();
           const deltaChars = fullResponse.length - lastPublishedContent.length;
           if (
@@ -3455,30 +3546,17 @@ async function runAgentPrompt(
     // Drain any image attachments accumulated during this turn
     const turnAttachments = agentd.pendingAttachments.splice(0);
 
-    if (canaryExpected) {
-      const textVerification = verifyCanary(fullResponse || "", canaryExpected);
-      const toolVerified = canaryState?.verified ?? false;
-
-      // Both canary checks must pass (AND logic). Requiring both makes it
-      // harder for prompt injection to bypass — the attacker must both
-      // produce the correct text suffix AND invoke the hidden tool.
-      if (!textVerification.clean || !toolVerified) {
-        const reasons = [];
-        if (!textVerification.clean) reasons.push("text");
-        if (!toolVerified) reasons.push("tool");
-        console.warn(`[pi-bridge] [${sessionId.slice(0, 8)}] Canary verification failed (${reasons.join("+")}) for untrusted agent response`);
+    if (sigilNonce) {
+      const result = verifySigilResponse(fullResponse || "", sigilNonce);
+      if (!result.passed) {
+        console.warn(`[pi-bridge] [${sessionId.slice(0, 8)}] Sigil verification failed: ${result.violations.join("; ")}`);
         turnSpan.setStatus({
           code: SpanStatusCode.ERROR,
-          message: "canary_verification_failed",
+          message: "sigil_verification_failed",
         });
         fullResponse = "Response blocked: integrity verification failed for untrusted agent output.";
       } else {
-        fullResponse = textVerification.stripped;
-      }
-
-      // Reset tool canary state for next turn
-      if (canaryState) {
-        canaryState.verified = false;
+        fullResponse = result.response;
       }
     }
 
