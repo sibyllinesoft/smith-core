@@ -1,6 +1,6 @@
 {
   "name": "@sibyllinesoft/smith-services-darwin-arm64",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Smith service binaries for macOS ARM64",
   "license": "MIT",
   "repository": {

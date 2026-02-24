@@ -37,11 +37,7 @@ pub fn evaluate_filters(args: &Value, filters: &[FilterDef]) -> FilterResult {
                 }
             }
             FilterDef::Require { key, message } => {
-                let missing = match args.get(key) {
-                    None => true,
-                    Some(Value::Null) => true,
-                    _ => false,
-                };
+                let missing = matches!(args.get(key), None | Some(Value::Null));
                 if missing {
                     return FilterResult::Deny(message.clone());
                 }

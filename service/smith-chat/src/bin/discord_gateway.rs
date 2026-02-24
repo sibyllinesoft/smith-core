@@ -302,7 +302,7 @@ async fn handle_message_create(
     let sender_display = author
         .and_then(|a| a.get("global_name"))
         .and_then(|v| v.as_str())
-        .or_else(|| sender_username);
+        .or(sender_username);
 
     // Parse timestamp to unix epoch
     let _unix_ts = chrono::DateTime::parse_from_rfc3339(timestamp)

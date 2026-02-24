@@ -70,19 +70,14 @@ pub struct Participant {
     pub tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantRole {
     User,
     Bot,
     System,
+    #[default]
     Unknown,
-}
-
-impl Default for ParticipantRole {
-    fn default() -> Self {
-        Self::Unknown
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,18 +110,13 @@ impl MessageContent {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MessageFormat {
+    #[default]
     PlainText,
     Markdown,
     Html,
-}
-
-impl Default for MessageFormat {
-    fn default() -> Self {
-        MessageFormat::PlainText
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

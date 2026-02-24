@@ -1400,7 +1400,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
 name = "mcp-index"
-version = "0.1.10"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-sidecar"
-version = "0.1.10"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -2596,7 +2596,7 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smith-admission"
-version = "0.1.10"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2616,7 +2616,7 @@ dependencies = [
 
 [[package]]
 name = "smith-chat"
-version = "0.1.10"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "async-nats",

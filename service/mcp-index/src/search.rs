@@ -76,8 +76,10 @@ impl ToolIndex {
         // Pre-process query: replace underscores/hyphens with spaces
         let processed_query = query.replace(['_', '-'], " ");
 
-        let mut query_parser =
-            QueryParser::for_index(&self.index, vec![self.f_name, self.f_description, self.f_server]);
+        let mut query_parser = QueryParser::for_index(
+            &self.index,
+            vec![self.f_name, self.f_description, self.f_server],
+        );
         // Boost name field so tool-name matches rank higher
         query_parser.set_field_boost(self.f_name, 3.0);
         query_parser.set_field_boost(self.f_server, 2.0);

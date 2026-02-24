@@ -153,10 +153,12 @@ async fn call_tool(
     let call_result = if let Some(dur) = state.call_timeout {
         match timeout(dur, call_future).await {
             Ok(inner) => inner,
-            Err(_) => return Err(AppError::McpServerError(format!(
-                "tool call '{name}' timed out after {}s",
-                dur.as_secs()
-            ))),
+            Err(_) => {
+                return Err(AppError::McpServerError(format!(
+                    "tool call '{name}' timed out after {}s",
+                    dur.as_secs()
+                )))
+            }
         }
     } else {
         call_future.await

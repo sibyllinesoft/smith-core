@@ -173,12 +173,12 @@ The full stack ships with:
 |---------|---------|------|
 | NATS | Message bus (JetStream) | 4222 |
 | PostgreSQL | Primary database | 5432 |
-| Redis | Cache | — |
+| Redis | Cache | 6379 |
 | ClickHouse | Telemetry storage | — |
 | OTEL Collector | Trace/metrics pipeline | — |
 | Grafana | Dashboards | 3000 |
-| OPA | Policy engine | — |
-| Envoy | mTLS gateway | 6173 |
+| OPA | Policy engine | 8181 |
+| Envoy | mTLS gateway / egress proxy | 6173, 6174 |
 | Session Recorder | Chat session persistence | — |
 | Smith Cron | Scheduled tasks | — |
 | MCP Postgres | DB tools via MCP | — |

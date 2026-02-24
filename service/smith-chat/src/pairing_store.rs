@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::message::ChatPlatform;
 
 /// Policy governing how DMs are handled before processing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DmPolicy {
     /// Users must submit a pairing code before messages are processed.
@@ -16,13 +16,8 @@ pub enum DmPolicy {
     /// Users must be on an allowlist to send messages.
     Allowlist,
     /// All DMs are processed without restriction.
+    #[default]
     Open,
-}
-
-impl Default for DmPolicy {
-    fn default() -> Self {
-        Self::Open
-    }
 }
 
 impl std::str::FromStr for DmPolicy {

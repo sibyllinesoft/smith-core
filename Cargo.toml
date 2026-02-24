@@ -9,7 +9,7 @@ members = [
 # agentd is installed via npm: npm install -g @sibyllinesoft/agentd
 
 [workspace.package]
-version = "0.1.10"
+version = "0.2.4"
 edition = "2021"
 authors = ["Smith Team"]
 license = "MIT"

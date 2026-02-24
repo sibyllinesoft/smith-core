@@ -25,7 +25,7 @@ use futures::{SinkExt, StreamExt};
 use redis::{aio::ConnectionManager, AsyncCommands};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::{signal, sync::Mutex, sync::watch, time::timeout};
+use tokio::{signal, sync::watch, sync::Mutex, time::timeout};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -51,11 +51,7 @@ pub struct Cli {
     event_secret: Option<String>,
 
     /// Logical label used in logs/metrics
-    #[arg(
-        long,
-        env = "CHAT_BRIDGE_ADAPTER_LABEL",
-        default_value = "chat-bridge"
-    )]
+    #[arg(long, env = "CHAT_BRIDGE_ADAPTER_LABEL", default_value = "chat-bridge")]
     adapter_label: String,
 
     /// Redis connection string (shared with observability stack)
@@ -280,9 +276,14 @@ pub async fn run(cli: Cli) -> Result<()> {
     info!("PostgreSQL connection pool ready (max_size=8)");
 
     let pairing_store = Arc::new(
-        PairingStore::new(&cli.redis_url, pg_pool.clone(), cli.pairing_code_ttl, cli.pairing_ttl)
-            .await
-            .context("failed to create pairing store")?,
+        PairingStore::new(
+            &cli.redis_url,
+            pg_pool.clone(),
+            cli.pairing_code_ttl,
+            cli.pairing_ttl,
+        )
+        .await
+        .context("failed to create pairing store")?,
     );
 
     let allowlist = if let Some(path) = &cli.allowlist_config {
@@ -484,11 +485,7 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
                         .username
                         .as_deref()
                         .unwrap_or(&envelope.sender.id);
-                    let display_name = envelope
-                        .sender
-                        .display_name
-                        .as_deref()
-                        .unwrap_or(username);
+                    let display_name = envelope.sender.display_name.as_deref().unwrap_or(username);
                     match ensure_user_identity(
                         &state.pg_pool,
                         &envelope.platform,
@@ -540,12 +537,9 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
                 // No pairing — check if the user has a known identity in the
                 // database (e.g. admin-created). If so, auto-create a pairing
                 // so they don't need to go through the code flow.
-                let has_identity = check_known_identity(
-                    &state.pg_pool,
-                    &envelope.platform,
-                    &envelope.sender.id,
-                )
-                .await;
+                let has_identity =
+                    check_known_identity(&state.pg_pool, &envelope.platform, &envelope.sender.id)
+                        .await;
 
                 if has_identity {
                     info!(
@@ -643,7 +637,11 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
     // Deliver the user message via steering (request/reply with timeout for liveness check).
     // Skip for new sessions — the goal is already delivered in the session start request,
     // and pi-bridge fires runAgentPrompt immediately. Sending again causes double-prompt.
-    if !is_new_session && publish_user_message(&state, &record, &envelope).await.is_err() {
+    if !is_new_session
+        && publish_user_message(&state, &record, &envelope)
+            .await
+            .is_err()
+    {
         // Existing session appears dead — recreate and retry
         warn!(session_id = ?record.session_id, "Session appears dead, creating new session");
 
@@ -1619,11 +1617,7 @@ fn typing_key(channel_id: &str, thread_root: &str) -> String {
     format!("{channel_id}:{thread_root}")
 }
 
-async fn typing_loop(
-    state: Arc<AppState>,
-    channel_id: String,
-    mut stop: watch::Receiver<bool>,
-) {
+async fn typing_loop(state: Arc<AppState>, channel_id: String, mut stop: watch::Receiver<bool>) {
     loop {
         if let Err(err) = state
             .chat_bridge
