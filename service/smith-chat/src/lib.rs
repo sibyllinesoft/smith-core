@@ -33,6 +33,7 @@ pub mod allowlist;
 pub mod bridge;
 pub mod config;
 pub mod daemon;
+pub mod debounce;
 pub mod error;
 #[cfg(feature = "otel-exporter")]
 pub mod exporter;

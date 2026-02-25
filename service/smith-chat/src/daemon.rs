@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use async_nats::{Client as NatsClient, Message};
 use clap::Parser;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use redis::{aio::ConnectionManager, AsyncCommands};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -169,6 +169,12 @@ pub struct Cli {
         default_value = "postgresql://smith:smith-dev@localhost:5432/smith"
     )]
     database_url: String,
+
+    /// Message debounce window in milliseconds (0 = disabled).
+    /// When enabled, rapid successive messages from the same user in the same
+    /// thread are batched into a single combined message.
+    #[arg(long, env = "CHAT_BRIDGE_DEBOUNCE_MS", default_value_t = 1500)]
+    debounce_ms: u64,
 }
 
 #[derive(Clone)]
@@ -348,6 +354,25 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .with_context(|| format!("failed to subscribe to {}", cli.ingest_subject))?;
 
+    // Optionally set up message debouncing.
+    let debouncer = if cli.debounce_ms > 0 {
+        let debounce_state = Arc::clone(&state);
+        let (debouncer, _handle) =
+            crate::debounce::Debouncer::spawn(cli.debounce_ms, move |envelope| {
+                let st = Arc::clone(&debounce_state);
+                tokio::spawn(async move {
+                    if let Err(err) = process_envelope(st, envelope).await {
+                        error!(error = ?err, "Failed to process debounced message");
+                    }
+                });
+            });
+        info!(debounce_ms = cli.debounce_ms, "Message debouncing enabled");
+        Some(debouncer)
+    } else {
+        info!("Message debouncing disabled");
+        None
+    };
+
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
@@ -355,12 +380,30 @@ pub async fn run(cli: Cli) -> Result<()> {
         tokio::select! {
             _ = &mut shutdown => {
                 info!("Shutdown signal received; exiting");
+                // Drop the debouncer so its channel closes and it flushes pending buffers.
+                drop(debouncer);
                 break;
             }
             maybe_msg = subscriber.next() => {
                 match maybe_msg {
                     Some(msg) => {
-                        tokio::spawn(handle_message(Arc::clone(&state), msg));
+                        if let Some(ref debouncer) = debouncer {
+                            match serde_json::from_slice::<BridgeMessageEnvelope>(&msg.payload) {
+                                Ok(envelope) => {
+                                    if let Err(env) = debouncer.send(envelope) {
+                                        warn!(post_id = %env.post_id, "Debouncer channel closed, processing directly");
+                                        tokio::spawn(process_envelope(Arc::clone(&state), env).map(|r| {
+                                            if let Err(err) = r { error!(error = ?err, "Failed to process message"); }
+                                        }));
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(error = ?err, "Failed to parse bridge message JSON");
+                                }
+                            }
+                        } else {
+                            tokio::spawn(handle_message(Arc::clone(&state), msg));
+                        }
                     }
                     None => {
                         warn!("NATS subscription closed; exiting");
@@ -407,6 +450,12 @@ async fn handle_message(state: Arc<AppState>, msg: Message) {
 async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
     let envelope: BridgeMessageEnvelope = serde_json::from_slice(&msg.payload)
         .with_context(|| "failed to parse bridge message JSON")?;
+    process_envelope(state, envelope).await
+}
+
+/// Core envelope processing logic, separated from deserialization so the
+/// debouncer can call it directly with a combined envelope.
+async fn process_envelope(state: Arc<AppState>, envelope: BridgeMessageEnvelope) -> Result<()> {
 
     if let Some(expected) = &state.config.event_secret {
         match envelope.secret.as_deref() {
@@ -709,59 +758,59 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct HistoryMessage {
-    role: String,
-    content: String,
+pub struct HistoryMessage {
+    pub role: String,
+    pub content: String,
     #[serde(default)]
-    username: Option<String>,
+    pub username: Option<String>,
     #[serde(default)]
-    timestamp: Option<String>,
+    pub timestamp: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-struct BridgeMessageEnvelope {
-    platform: String,
-    team_id: String,
+pub struct BridgeMessageEnvelope {
+    pub platform: String,
+    pub team_id: String,
     #[serde(default)]
-    team_name: Option<String>,
-    channel_id: String,
+    pub team_name: Option<String>,
+    pub channel_id: String,
     #[serde(default)]
-    channel_name: Option<String>,
-    post_id: String,
-    thread_root: String,
-    message: String,
+    pub channel_name: Option<String>,
+    pub post_id: String,
+    pub thread_root: String,
+    pub message: String,
     #[serde(default)]
-    props: HashMap<String, Value>,
+    pub props: HashMap<String, Value>,
     #[serde(default)]
-    attachments: Vec<AttachmentEnvelope>,
-    timestamp: i64,
+    pub attachments: Vec<AttachmentEnvelope>,
+    pub timestamp: i64,
     #[serde(default)]
-    secret: Option<String>,
-    sender: SenderEnvelope,
+    pub secret: Option<String>,
+    pub sender: SenderEnvelope,
     #[serde(default)]
-    thread_history: Vec<HistoryMessage>,
+    pub thread_history: Vec<HistoryMessage>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AttachmentEnvelope {
-    id: String,
-    name: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachmentEnvelope {
+    pub id: String,
+    pub name: String,
     #[serde(default)]
-    mime_type: Option<String>,
-    size_bytes: i64,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-struct SenderEnvelope {
-    id: String,
+pub struct SenderEnvelope {
+    pub id: String,
     #[serde(default)]
-    username: Option<String>,
+    pub username: Option<String>,
     #[serde(default)]
-    display_name: Option<String>,
+    pub display_name: Option<String>,
     #[serde(default)]
-    is_bot: bool,
+    pub is_bot: bool,
 }
 
 struct ThreadStore {

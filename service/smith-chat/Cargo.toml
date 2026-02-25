@@ -92,6 +92,7 @@ urlencoding = "2"
 uuid = { workspace = true }
 jsonwebtoken = "9"
 rand = "0.8"
+regex-lite = "0.1"
 axum = { version = "0.7", optional = true }
 hmac = "0.12"
 sha2 = { workspace = true }
