@@ -34,6 +34,7 @@ impl GatewayContext {
 }
 
 /// Build a `BridgeMessageEnvelope` in the shape the daemon expects.
+#[allow(clippy::too_many_arguments)]
 pub fn build_envelope(
     platform: &str,
     team_id: &str,

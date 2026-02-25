@@ -92,7 +92,7 @@ impl MatrixAdapter {
 
         let timestamp = event
             .origin_server_ts
-            .and_then(|ms| DateTime::from_timestamp_millis(ms))
+            .and_then(DateTime::from_timestamp_millis)
             .unwrap_or_else(Utc::now);
 
         let msgtype = content

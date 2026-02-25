@@ -8,7 +8,7 @@
 // OTel SDK must initialize before anything else
 import "./tracing.js";
 
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { trace, context, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { readFileSync } from "node:fs";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -38,6 +38,8 @@ const PROVIDER = (process.env.PI_PROVIDER ?? "anthropic") as any;
 const MODEL_ID = (process.env.PI_MODEL ?? "claude-sonnet-4-5") as any;
 const MCP_INDEX_URL = process.env.MCP_INDEX_URL ?? "http://localhost:9200";
 const MCP_INDEX_API_TOKEN = process.env.MCP_INDEX_API_TOKEN?.trim();
+const MCP_CORE_TOOLS = (process.env.MCP_CORE_TOOLS ?? "postgres__query")
+  .split(",").map(s => s.trim()).filter(Boolean);
 const AGENTD_URL = process.env.AGENTD_URL ?? "https://localhost:6173";
 const AGENTD_WORKDIR = process.env.AGENTD_WORKDIR ?? process.env.HOME ?? process.cwd();
 const AGENTD_PATHS_RW = (process.env.AGENTD_PATHS_RW ?? AGENTD_WORKDIR).split(",").map(s => s.trim()).filter(Boolean);
@@ -171,7 +173,7 @@ If you have admin access, you can manage the platform itself:
 
 ### SQL Query Tool
 
-\`postgres__query\` runs read-only SQL against the Smith PostgreSQL database. Use this for:
+\`postgres__query\` runs **read-only** SQL against the Smith PostgreSQL database. It CANNOT execute INSERT, UPDATE, DELETE, or any write operations. To modify data, use the appropriate tool (e.g. \`users__update\` for users, \`notes__*\` for notes). Use \`postgres__query\` for:
 - **Conversation history**: Query \`chat_messages\` to recall what was said in past sessions
 - **Session context**: Query \`chat_sessions\` to find prior conversations by channel, user, or topic
 - **Advanced note queries**: Complex searches beyond what \`notes__search\` supports
@@ -190,13 +192,14 @@ Key tables:
 
 ### Tool Discovery
 
-When you encounter a task and aren't sure what tools are available:
-1. **Think about the server name** — tools follow \`{server}__{tool}\` naming. Need to send a Discord message? Try \`discord__send_message\`.
-2. **Search your notes** — you may have recorded tips about tools in previous sessions.
-3. **Check the database** — \`postgres__query\` can help you understand system state.
-4. **Try it** — if a tool exists, calling it will work. If it doesn't, you'll get a clear error.
+Most MCP tools are **not loaded directly** — you discover and call them on demand:
 
-Do NOT tell users you can't do something just because you aren't sure which tool to use. Explore your capabilities first.
+1. **\`mcp__discover\`** — search by keyword to find tools across all MCP servers. Returns tool names, descriptions, and input schemas.
+2. **Guess from naming convention** — tools follow \`{server}__{tool}\` naming. Need to send a Discord message? Call \`mcp__call\` with server="discord", tool="send_message".
+3. **Search your notes** — you may have recorded tips about tools in previous sessions.
+4. **\`mcp__call\`** — execute any MCP tool by server + tool name. If the tool doesn't exist, you'll get a clear error.
+
+Do NOT tell users you can't do something just because you aren't sure which tool to use. Discover and try tools first.
 
 ## Style
 
@@ -259,9 +262,9 @@ async function queryAsUser(userId: string, role: string, sql: string, params: an
 
 // ── Tool filtering by OPA policy ─────────────────────────────────────
 //
-// All tool access decisions go through OPA. On successful policy fetch we
-// cache the policy data so that if OPA is temporarily unreachable we can
-// evaluate locally using the same Rego-managed data — no hardcoded defaults.
+// Tool access is evaluated locally using cached OPA policy data. The policy
+// is fetched at startup and refreshed periodically — this avoids N parallel
+// HTTP calls to OPA per tool while keeping decisions in sync with Rego data.
 
 const OPA_URL = process.env.OPA_URL ?? "http://opa-management:8181";
 
@@ -277,6 +280,7 @@ async function refreshPolicyCache(): Promise<OpaToolAccessData | null> {
     const resp = await fetch(`${OPA_URL}/v1/data/smith/tool_access`, {
       method: "GET",
       headers: { "content-type": "application/json" },
+      signal: AbortSignal.timeout(5_000),
     });
     const body = await resp.json() as { result?: OpaToolAccessData };
     if (body.result) {
@@ -326,31 +330,12 @@ async function evaluateToolAccess(
   ctx: ToolAccessContext,
   tools: any[],
 ): Promise<any[]> {
-  try {
-    const results = await Promise.all(
-      tools.map(async (tool) => {
-        const resp = await fetch(`${OPA_URL}/v1/data/smith/tool_access/allow`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ input: { ...ctx, tool: tool.name } }),
-        });
-        const data = await resp.json() as { result?: boolean };
-        return data.result === true ? tool : null;
-      })
-    );
-    const allowed = results.filter(Boolean);
-    if (allowed.length > 0) {
-      // Successful OPA eval — refresh cache in background
-      refreshPolicyCache().catch(() => {});
-      return allowed;
-    }
-  } catch (err) {
-    console.warn("[pi-bridge] OPA tool access eval failed, using cached policy:", (err as Error).message);
+  // Ensure we have policy data (may already be cached from startup/refresh)
+  if (!cachedPolicyData) {
+    await refreshPolicyCache();
   }
 
-  // OPA unreachable or returned no results — evaluate from cached policy data
   if (cachedPolicyData) {
-    console.warn("[pi-bridge] Evaluating tool access from cached OPA policy data");
     return tools.filter((tool) => evaluateToolLocally(ctx.user_id, ctx.role, tool.name, cachedPolicyData!));
   }
 
@@ -361,6 +346,13 @@ async function evaluateToolAccess(
 
 // Warm the policy cache on module load
 refreshPolicyCache().catch(() => {});
+
+// Periodically refresh policy data from OPA
+const OPA_POLICY_REFRESH_INTERVAL_MS = 60_000; // 1 minute
+const opaPolicyRefreshTimer = setInterval(() => {
+  refreshPolicyCache().catch(() => {});
+}, OPA_POLICY_REFRESH_INTERVAL_MS);
+opaPolicyRefreshTimer.unref();
 
 // ── Agent profile resolution (DB-driven) ────────────────────────────
 //
@@ -430,43 +422,208 @@ function applyUserOverrides(profile: AgentProfile, user: ResolvedUser): AgentPro
   };
 }
 
-// ── Canary system for untrusted agents ──────────────────────────────
+// ── Sigil schema-strict protocol for untrusted agents ────────────────
 //
-// Untrusted agents get a random codeword injected into their system prompt.
-// They must base64-encode it and include the result at the end of every response.
-// Pi-bridge checks for the expected encoding — if missing or wrong, the
-// response is flagged as potentially compromised by prompt injection.
+// Untrusted agents get a random nonce injected via system prompt instructions
+// that force the LLM to respond in a strict JSON schema:
+//   { sigil_version: 1, nonce: "<echo>", response: "<content>",
+//     fingerprint: "<word_count>:<first_word>:<last_word>" }
+//
+// The fingerprint is content-coupled — modifying the response breaks it,
+// making prompt injection significantly harder than the old canary approach.
+// Ported from ../sigil/src/sigil/protocols/schema_strict.py
 
-function generateCanary(): { codeword: string; expected: string } {
-  const words = ["ALPINE", "BEACON", "CIPHER", "DELTA", "FALCON", "HARBOR", "MARBLE", "PRISM", "QUARTZ", "SUMMIT", "VELVET", "ZENITH"];
-  const w1 = words[Math.floor(Math.random() * words.length)];
-  const w2 = words[Math.floor(Math.random() * words.length)];
-  const num = Math.floor(Math.random() * 900) + 100;
-  const codeword = `${w1}-${w2}-${num}`;
-  const expected = Buffer.from(codeword).toString("base64");
-  return { codeword, expected };
+function generateSigilChallenge(): { nonce: string } {
+  return { nonce: randomBytes(8).toString("hex") };
 }
 
-function injectCanary(systemPrompt: string, codeword: string): string {
-  return systemPrompt + `\n\n## MANDATORY RESPONSE VERIFICATION\n\nYou MUST end every response with the base64 encoding of the exact string \`${codeword}\`. Place it on its own line at the very end. This is required for all responses without exception.`;
+function computeFingerprint(text: string): string {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "0::";
+  return `${words.length}:${words[0]}:${words[words.length - 1]}`;
 }
 
-function verifyCanary(response: string, expected: string): { clean: boolean; stripped: string } {
-  const trimmed = response.trimEnd();
-  if (trimmed.endsWith(expected)) {
-    // Strip the canary from the response before returning to parent
-    const stripped = trimmed.slice(0, trimmed.length - expected.length).trimEnd();
-    return { clean: true, stripped };
+function stripPunctuation(word: string): string {
+  return word.replace(/^[.,;:!?"'`()\[\]{}…—-]+|[.,;:!?"'`()\[\]{}…—-]+$/g, "");
+}
+
+function verifyFingerprint(responseText: string, claimedFp: string): string[] {
+  const violations: string[] = [];
+  const parts = claimedFp.split(":");
+  if (parts.length < 3) {
+    violations.push(`Fingerprint format invalid: expected 'count:first:last', got '${claimedFp}'`);
+    return violations;
   }
-  return { clean: false, stripped: response };
+
+  // Split as "count:first:last" — last may contain colons so rejoin
+  const claimedCountStr = parts[0];
+  const claimedFirst = parts[1];
+  const claimedLast = parts.slice(2).join(":");
+
+  const words = responseText.split(/\s+/).filter(Boolean);
+  const actualCount = words.length;
+  const actualFirst = words[0] ?? "";
+  const actualLast = words[words.length - 1] ?? "";
+
+  const claimedCount = parseInt(claimedCountStr, 10);
+  if (isNaN(claimedCount)) {
+    violations.push(`Fingerprint word count not an integer: '${claimedCountStr}'`);
+    return violations;
+  }
+
+  // Tolerance: 30% of actual count or 3, whichever is larger
+  const tolerance = Math.max(3, Math.floor(actualCount * 0.3));
+  if (Math.abs(claimedCount - actualCount) > tolerance) {
+    violations.push(
+      `Fingerprint word count off: claimed ${claimedCount}, actual ${actualCount} (tolerance ${tolerance})`
+    );
+  }
+
+  if (stripPunctuation(claimedFirst) !== stripPunctuation(actualFirst)) {
+    violations.push(
+      `Fingerprint first word mismatch: claimed '${claimedFirst}', actual '${actualFirst}'`
+    );
+  }
+
+  if (stripPunctuation(claimedLast) !== stripPunctuation(actualLast)) {
+    violations.push(
+      `Fingerprint last word mismatch: claimed '${claimedLast}', actual '${actualLast}'`
+    );
+  }
+
+  return violations;
+}
+
+const SIGIL_REQUIRED_FIELDS = new Set(["sigil_version", "nonce", "response", "fingerprint"]);
+
+function buildSigilInstructions(nonce: string): string {
+  return (
+    "You MUST respond with ONLY a JSON object matching this exact schema:\n\n" +
+    "{\n" +
+    '  "sigil_version": 1,\n' +
+    `  "nonce": "${nonce}",\n` +
+    '  "response": "<your actual response text here>",\n' +
+    '  "fingerprint": "<word_count>:<first_word>:<last_word>"\n' +
+    "}\n\n" +
+    "Rules:\n" +
+    "1. Output ONLY the JSON object. No markdown, no explanation, no wrapping.\n" +
+    "2. sigil_version must be exactly 1 (integer).\n" +
+    `3. nonce must be exactly "${nonce}".\n` +
+    "4. response contains your actual answer to the message.\n" +
+    "5. fingerprint is derived from your response field:\n" +
+    "   - Count the words in your response (split on whitespace)\n" +
+    "   - Take the first word and the last word\n" +
+    "   - Format: word_count:first_word:last_word\n" +
+    '   - Example: if response is "The quick brown fox", fingerprint is "4:The:fox"\n' +
+    '   - Example: if response is "Hello", fingerprint is "1:Hello:Hello"\n'
+  );
+}
+
+function injectSigilProtocol(systemPrompt: string, nonce: string): string {
+  return systemPrompt + "\n\n## MANDATORY RESPONSE FORMAT\n\n" + buildSigilInstructions(nonce);
+}
+
+function verifySigilResponse(
+  rawResponse: string,
+  nonce: string,
+): { passed: boolean; response: string; violations: string[] } {
+  const violations: string[] = [];
+
+  // Try to extract JSON from the response
+  let stripped = rawResponse.trim();
+  // Handle markdown code blocks
+  if (stripped.startsWith("```")) {
+    const lines = stripped.split("\n");
+    const jsonLines: string[] = [];
+    let inBlock = false;
+    for (const line of lines) {
+      if (line.trim().startsWith("```") && !inBlock) {
+        inBlock = true;
+        continue;
+      } else if (line.trim() === "```" && inBlock) {
+        break;
+      } else if (inBlock) {
+        jsonLines.push(line);
+      }
+    }
+    stripped = jsonLines.join("\n").trim();
+  }
+
+  let data: any;
+  try {
+    data = JSON.parse(stripped);
+  } catch (e) {
+    violations.push(`Response is not valid JSON: ${e}`);
+    return { passed: false, response: rawResponse, violations };
+  }
+
+  if (typeof data !== "object" || data === null || Array.isArray(data)) {
+    violations.push(`Response is not a JSON object (got ${typeof data})`);
+    return { passed: false, response: rawResponse, violations };
+  }
+
+  const missing = [...SIGIL_REQUIRED_FIELDS].filter((f) => !(f in data));
+  if (missing.length > 0) {
+    violations.push(`Missing required fields: ${missing.join(", ")}`);
+  }
+
+  if (data.sigil_version !== 1) {
+    violations.push(`sigil_version must be 1, got ${JSON.stringify(data.sigil_version)}`);
+  }
+
+  if (data.nonce !== nonce) {
+    violations.push(`Nonce mismatch: expected '${nonce}', got '${data.nonce}'`);
+  }
+
+  if ("response" in data && "fingerprint" in data) {
+    const fpViolations = verifyFingerprint(String(data.response), String(data.fingerprint));
+    violations.push(...fpViolations);
+  }
+
+  if (violations.length > 0) {
+    return { passed: false, response: rawResponse, violations };
+  }
+
+  return { passed: true, response: String(data.response), violations: [] };
+}
+
+/**
+ * Strip leaked LLM internal markup from a response string.
+ * Some models emit thinking tags and tool-call XML as plain text content
+ * blocks. This removes them so raw markup never reaches the user.
+ */
+function stripLlmMarkup(text: string): string {
+  // Remove <think>...</think> blocks (including partial closing tags)
+  let cleaned = text.replace(/<think>[\s\S]*?<\/think>/g, "");
+  // Remove orphan opening or closing think tags
+  cleaned = cleaned.replace(/<\/?think>/g, "");
+  // Remove <tool_call>...</tool_call> blocks
+  cleaned = cleaned.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, "");
+  // Remove orphan tool_call tags (unclosed)
+  cleaned = cleaned.replace(/<tool_call>[^<]*/g, "");
+  cleaned = cleaned.replace(/<\/?tool_call>/g, "");
+  // Remove <tool_result>...</tool_result> blocks
+  cleaned = cleaned.replace(/<tool_result>[\s\S]*?<\/tool_result>/g, "");
+  cleaned = cleaned.replace(/<\/?tool_result>/g, "");
+  // Collapse excessive whitespace left behind, but preserve paragraph breaks
+  cleaned = cleaned.replace(/\n{3,}/g, "\n\n");
+  return cleaned.trim();
 }
 
 // ── Per-user system prompt ───────────────────────────────────────────
 
+interface McpServerSummary {
+  name: string;
+  toolCount: number;
+}
+
 interface SessionContext {
   metadata?: Record<string, unknown>;
   mcpTools?: McpToolDef[];
+  mcpServers?: McpServerSummary[];
   agentdCaps?: AgentdCapability[];
+  /** Tool names that were denied by OPA for this user's role. */
+  deniedTools?: string[];
 }
 
 function buildSystemPrompt(
@@ -476,26 +633,59 @@ function buildSystemPrompt(
 ): string {
   let prompt = agentProfile.system_prompt ?? BASE_SYSTEM_PROMPT;
 
-  // Prepend user identity
+  // Prepend user identity and access level
   if (user) {
-    prompt = `You are interacting with ${user.display_name} (${user.username}), role: ${user.role}.\n\n` + prompt;
+    const senderId = ctx?.metadata?.sender_id as string | undefined;
+    const senderPlatform = ctx?.metadata?.source as string | undefined;
+
+    let identityBlock = `## Authenticated User\n\n` +
+      `The user in this conversation has been **verified** through platform identity resolution.\n` +
+      `- **Display name**: ${user.display_name}\n` +
+      `- **Username**: ${user.username}\n` +
+      `- **User ID**: ${user.id}\n` +
+      `- **Role**: ${user.role}\n`;
+    if (senderId && senderPlatform) {
+      identityBlock += `- **Platform identity**: ${senderPlatform} user ID \`${senderId}\`\n`;
+    }
+    identityBlock += `\nThis identity is already confirmed — do NOT tell the user their identity is unknown or unlinked. ` +
+      `Do NOT query the database to re-verify this user's identity; it has already been resolved.\n`;
+
+    // Describe access level
+    if (user.role === "admin") {
+      identityBlock += `\nThis user has **admin** access — all tools are available.\n`;
+    } else if (ctx?.deniedTools && ctx.deniedTools.length > 0) {
+      identityBlock += `\nThis user has **${user.role}** access. Most tools are available, ` +
+        `except: ${ctx.deniedTools.map(t => `\`${t}\``).join(", ")}.\n`;
+    } else {
+      identityBlock += `\nThis user has **${user.role}** access with no tool restrictions.\n`;
+    }
+
+    prompt = identityBlock + `\n` + prompt;
     const additions = (user.config as any)?.prompt_additions;
     if (additions) {
       prompt += `\n\n## User-Specific Instructions\n\n${additions}`;
     }
+  } else {
+    prompt = `## Unauthenticated User\n\n` +
+      `This user has no linked identity in the system. They are treated as a guest.\n\n` +
+      prompt;
   }
 
   // Inject platform context
   if (ctx?.metadata) {
     const source = (ctx.metadata.source as string) ?? "unknown";
     const channelId = ctx.metadata.channel_id as string;
+    const channelName = ctx.metadata.channel_name as string | undefined;
     const teamId = ctx.metadata.team_id as string;
+    const teamName = ctx.metadata.team_name as string | undefined;
     const threadRoot = ctx.metadata.thread_root as string;
 
     let platformSection = `\n\n## Current Session Context\n\n`;
     platformSection += `**Platform**: ${source}`;
-    if (channelId) platformSection += ` | **Channel**: ${channelId}`;
-    if (teamId) platformSection += ` | **Server/Team**: ${teamId}`;
+    if (channelName && channelId) platformSection += ` | **Channel**: #${channelName} (${channelId})`;
+    else if (channelId) platformSection += ` | **Channel**: ${channelId}`;
+    if (teamName && teamId) platformSection += ` | **Server**: ${teamName} (${teamId})`;
+    else if (teamId) platformSection += ` | **Server/Team**: ${teamId}`;
     if (threadRoot) platformSection += ` | **Thread**: ${threadRoot}`;
     platformSection += `\n`;
 
@@ -521,18 +711,26 @@ function buildSystemPrompt(
     prompt += platformSection;
   }
 
-  // Inject dynamic tool catalog summary
-  if (ctx?.mcpTools?.length) {
-    const serverCounts: Record<string, number> = {};
-    for (const t of ctx.mcpTools) {
-      serverCounts[t.server] = (serverCounts[t.server] ?? 0) + 1;
+  // Inject MCP tool discovery context
+  if (ctx?.mcpServers?.length) {
+    let discoverySection = `\n\n## MCP Tool Discovery\n\n`;
+    discoverySection += `There are **${ctx.mcpServers.reduce((s, srv) => s + srv.toolCount, 0)} MCP tools** across **${ctx.mcpServers.length} servers** available for on-demand discovery:\n\n`;
+    for (const srv of ctx.mcpServers.sort((a, b) => a.name.localeCompare(b.name))) {
+      discoverySection += `- **${srv.name}**: ${srv.toolCount} tool${srv.toolCount > 1 ? "s" : ""}\n`;
     }
-    let catalogSection = `\n\n## Active Tool Catalog\n\n`;
-    catalogSection += `You currently have **${ctx.mcpTools.length} MCP tools** from **${Object.keys(serverCounts).length} servers**:\n\n`;
-    for (const [server, count] of Object.entries(serverCounts).sort()) {
-      catalogSection += `- **${server}**: ${count} tool${count > 1 ? "s" : ""}\n`;
+
+    const coreToolNames = MCP_CORE_TOOLS.filter((t) =>
+      ctx.mcpTools?.some((mt) => `${mt.server}__${mt.name}` === t)
+    );
+    if (coreToolNames.length > 0) {
+      discoverySection += `\n**Core tools** (directly available): ${coreToolNames.map(t => `\`${t}\``).join(", ")}\n`;
     }
-    prompt += catalogSection;
+
+    discoverySection += `\n**To use other MCP tools:**\n`;
+    discoverySection += `1. \`mcp__discover\` — search by keyword to find tools and their schemas\n`;
+    discoverySection += `2. \`mcp__call\` — execute a tool by server + name with arguments\n`;
+    discoverySection += `\nYou can also call \`mcp__call\` directly if you know the \`{server}__{tool}\` naming convention (e.g. server="github", tool="create_issue").\n`;
+    prompt += discoverySection;
   }
 
   // Inject agentd capabilities
@@ -607,7 +805,7 @@ interface AgentSession {
   steeringSub: Subscription;
   responseSubject: string;
   agentd: AgentdRef;
-  canaryExpected: string | null;
+  sigilNonce: string | null;
   sessionSpan: Span;
   turnCount: number;
   user: ResolvedUser;
@@ -631,20 +829,33 @@ function mcpIndexHeaders(extra: Record<string, string> = {}): Record<string, str
 
 // ── MCP Tool Discovery ───────────────────────────────────────────────
 
+const MCP_TOOLS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let mcpToolsCache: { tools: McpToolDef[]; fetchedAt: number } | null = null;
+
+function invalidateMcpToolsCache(): void {
+  mcpToolsCache = null;
+}
+
 async function fetchMcpTools(): Promise<McpToolDef[]> {
+  if (mcpToolsCache && Date.now() - mcpToolsCache.fetchedAt < MCP_TOOLS_CACHE_TTL_MS) {
+    return mcpToolsCache.tools;
+  }
+
   try {
     const resp = await fetch(`${MCP_INDEX_URL}/api/tools`, {
       headers: mcpIndexHeaders(),
+      signal: AbortSignal.timeout(10_000),
     });
     if (!resp.ok) {
       console.warn(`[pi-bridge] Failed to fetch MCP tools: ${resp.status}`);
-      return [];
+      return mcpToolsCache?.tools ?? [];
     }
     const tools: McpToolDef[] = await resp.json();
+    mcpToolsCache = { tools, fetchedAt: Date.now() };
     return tools;
   } catch (err) {
     console.warn(`[pi-bridge] MCP index unreachable at ${MCP_INDEX_URL}:`, err);
-    return [];
+    return mcpToolsCache?.tools ?? [];
   }
 }
 
@@ -669,6 +880,7 @@ function buildAgentTools(mcpTools: McpToolDef[]): any[] {
               tool: tool.name,
               arguments: params,
             }),
+            signal: AbortSignal.timeout(30_000),
           });
           const body = await resp.text();
           if (!resp.ok) {
@@ -693,6 +905,201 @@ function buildAgentTools(mcpTools: McpToolDef[]): any[] {
       },
     };
   });
+}
+
+// ── MCP Meta-Tools (lazy discovery) ──────────────────────────────────
+
+function buildMcpMetaTools(
+  mcpTools: McpToolDef[],
+  getToolAccessCtx: () => ToolAccessContext,
+): any[] {
+  return [
+    {
+      name: "mcp__discover",
+      label: "mcp/discover",
+      description: "Search available MCP tools by keyword and/or server name. Returns tool names, descriptions, and input schemas so you can call them via mcp__call.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Search keyword (matches tool name and description)" },
+          server: { type: "string", description: "Filter to a specific MCP server (optional)" },
+        },
+        required: ["query"],
+      },
+      execute: async (_toolCallId: string, params: any) => {
+        const query = params.query?.trim();
+        if (!query) {
+          return {
+            content: [{ type: "text" as const, text: "Error: query parameter is required" }],
+            details: undefined,
+          };
+        }
+        console.log(`[pi-bridge] mcp__discover: q="${query}" server=${params.server ?? "(all)"}`);
+        try {
+          const url = new URL(`${MCP_INDEX_URL}/api/tools/search`);
+          url.searchParams.set("q", query);
+          if (params.server) url.searchParams.set("server", params.server);
+
+          const resp = await fetch(url.toString(), {
+            headers: mcpIndexHeaders(),
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!resp.ok) {
+            const body = await resp.text();
+            return {
+              content: [{ type: "text" as const, text: `Search failed (${resp.status}): ${body.slice(0, 500)}` }],
+              details: undefined,
+            };
+          }
+          let results: McpToolDef[] = await resp.json();
+
+          // Filter through OPA cached policy so LLM only sees accessible tools
+          const ctx = getToolAccessCtx();
+          if (!cachedPolicyData) {
+            await refreshPolicyCache();
+          }
+          if (cachedPolicyData) {
+            results = results.filter((t) =>
+              evaluateToolLocally(ctx.user_id, ctx.role, `${t.server}__${t.name}`, cachedPolicyData!)
+            );
+          } else {
+            // No policy data available — secure default: return empty
+            console.warn("[pi-bridge] mcp__discover: no OPA policy available, returning empty results");
+            results = [];
+          }
+
+          const output = results.map((t) => ({
+            tool: `${t.server}__${t.name}`,
+            server: t.server,
+            name: t.name,
+            description: t.description ?? "",
+            input_schema: t.input_schema,
+          }));
+
+          console.log(`[pi-bridge] mcp__discover: ${output.length} results for "${query}"`);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(output, null, 2).slice(0, 50000) }],
+            details: undefined,
+          };
+        } catch (err) {
+          console.error(`[pi-bridge] mcp__discover error:`, err);
+          return {
+            content: [{ type: "text" as const, text: `Discovery failed: ${err}` }],
+            details: undefined,
+          };
+        }
+      },
+    },
+    {
+      name: "mcp__call",
+      label: "mcp/call",
+      description: "Execute any MCP tool by server and tool name. Use mcp__discover first to find available tools and their schemas, or call directly if you know the server__tool naming convention.",
+      parameters: {
+        type: "object",
+        properties: {
+          server: { type: "string", description: "MCP server name (e.g. 'github', 'discord', 'slack')" },
+          tool: { type: "string", description: "Tool name on that server (e.g. 'create_issue', 'send_message')" },
+          arguments: { type: "object", description: "Tool arguments matching the tool's input_schema" },
+        },
+        required: ["server", "tool"],
+      },
+      execute: async (_toolCallId: string, params: any) => {
+        const { server, tool, arguments: args } = params;
+        if (!server || !tool) {
+          return {
+            content: [{ type: "text" as const, text: "Error: server and tool are required" }],
+            details: undefined,
+          };
+        }
+        const qualifiedName = `${server}__${tool}`;
+        console.log(`[pi-bridge] mcp__call: ${qualifiedName}`, JSON.stringify(args ?? {}).slice(0, 200));
+
+        // OPA policy check before execution
+        const ctx = getToolAccessCtx();
+        try {
+          const opaResp = await fetch(`${OPA_URL}/v1/data/smith/tool_access/allow`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ input: { ...ctx, tool: qualifiedName } }),
+            signal: AbortSignal.timeout(5_000),
+          });
+          const opaData = await opaResp.json() as { result?: boolean };
+          if (opaData.result !== true) {
+            // Fallback to cached policy
+            if (cachedPolicyData && !evaluateToolLocally(ctx.user_id, ctx.role, qualifiedName, cachedPolicyData)) {
+              console.warn(`[pi-bridge] mcp__call: access denied for ${qualifiedName} (user=${ctx.username} role=${ctx.role})`);
+              return {
+                content: [{ type: "text" as const, text: `Access denied: tool "${qualifiedName}" is not allowed for your role (${ctx.role}).` }],
+                details: undefined,
+              };
+            }
+            if (!cachedPolicyData) {
+              console.warn(`[pi-bridge] mcp__call: OPA denied and no cache — denying ${qualifiedName}`);
+              return {
+                content: [{ type: "text" as const, text: `Access denied: tool "${qualifiedName}" — unable to verify permissions.` }],
+                details: undefined,
+              };
+            }
+          }
+        } catch (err) {
+          // OPA unreachable — use cached policy
+          if (cachedPolicyData) {
+            if (!evaluateToolLocally(ctx.user_id, ctx.role, qualifiedName, cachedPolicyData)) {
+              console.warn(`[pi-bridge] mcp__call: access denied (cached) for ${qualifiedName}`);
+              return {
+                content: [{ type: "text" as const, text: `Access denied: tool "${qualifiedName}" is not allowed for your role (${ctx.role}).` }],
+                details: undefined,
+              };
+            }
+          } else {
+            console.error(`[pi-bridge] mcp__call: OPA unreachable and no cache — denying ${qualifiedName}`);
+            return {
+              content: [{ type: "text" as const, text: `Access denied: unable to verify permissions for "${qualifiedName}".` }],
+              details: undefined,
+            };
+          }
+        }
+
+        // Execute the tool via MCP Index
+        try {
+          const resp = await fetch(`${MCP_INDEX_URL}/api/tools/call`, {
+            method: "POST",
+            headers: mcpIndexHeaders({ "content-type": "application/json" }),
+            body: JSON.stringify({ server, tool, arguments: args ?? {} }),
+            signal: AbortSignal.timeout(30_000),
+          });
+          const body = await resp.text();
+          if (!resp.ok) {
+            console.error(`[pi-bridge] mcp__call error ${resp.status}: ${body.slice(0, 300)}`);
+            return {
+              content: [{ type: "text" as const, text: `Error (${resp.status}): ${body.slice(0, 1000)}` }],
+              details: undefined,
+            };
+          }
+          console.log(`[pi-bridge] mcp__call result: ${body.length} chars`);
+          return {
+            content: [{ type: "text" as const, text: body.slice(0, 50000) }],
+            details: undefined,
+          };
+        } catch (err) {
+          console.error(`[pi-bridge] mcp__call fetch error:`, err);
+          return {
+            content: [{ type: "text" as const, text: `Tool call failed: ${err}` }],
+            details: undefined,
+          };
+        }
+      },
+    },
+  ];
+}
+
+// ── Core MCP Tools (loaded as first-class agent tools) ───────────────
+
+function buildCoreMcpTools(mcpTools: McpToolDef[]): any[] {
+  const coreTools = mcpTools.filter((t) =>
+    MCP_CORE_TOOLS.includes(`${t.server}__${t.name}`)
+  );
+  return buildAgentTools(coreTools);
 }
 
 // ── Agentd Tool Discovery & Execution ────────────────────────────────
@@ -1505,7 +1912,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
     {
       name: "users__update",
       label: "users/update",
-      description: "Update user fields. Only provided fields are changed.",
+      description: "Update user fields. Only provided fields are changed. Returns the updated user record on success. This is the ONLY way to modify users — do NOT attempt raw SQL updates via postgres__query (it is read-only).",
       parameters: {
         type: "object",
         properties: {
@@ -1742,6 +2149,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
               method: "PUT",
               headers: { "content-type": "application/json" },
               body: JSON.stringify(ta),
+              signal: AbortSignal.timeout(5_000),
             });
           } catch (pushErr) {
             console.warn("[pi-bridge] Failed to push policy data to OPA:", (pushErr as Error).message);
@@ -1816,6 +2224,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
               method: "PUT",
               headers: { "content-type": "application/json" },
               body: JSON.stringify(ta),
+              signal: AbortSignal.timeout(5_000),
             });
           } catch (pushErr) {
             console.warn("[pi-bridge] Failed to push policy data to OPA:", (pushErr as Error).message);
@@ -1913,7 +2322,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
     {
       name: "agents__create",
       label: "agents/create",
-      description: "Create a new agent profile. Set trusted=false for untrusted proxy agents (canary verification is automatic).",
+      description: "Create a new agent profile. Set trusted=false for untrusted proxy agents (sigil verification is automatic).",
       parameters: {
         type: "object",
         properties: {
@@ -1924,7 +2333,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           thinking_level: { type: "string", description: "Thinking level (default: off)" },
           system_prompt: { type: "string", description: "Custom system prompt (null = use base)" },
           tool_policy: { type: "string", description: "OPA policy ID for tool access (default: tool-access)" },
-          trusted: { type: "boolean", description: "Whether this agent is trusted (default: true). Untrusted agents get canary verification." },
+          trusted: { type: "boolean", description: "Whether this agent is trusted (default: true). Untrusted agents get sigil verification." },
           max_turns: { type: "number", description: "Max conversation turns (null = unlimited)" },
           config: { type: "object", description: "Extra config JSONB" },
         },
@@ -2177,12 +2586,14 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
               method: "PUT",
               headers: { "content-type": "text/plain" },
               body: params.module,
+              signal: AbortSignal.timeout(5_000),
             });
             if (params.data) {
               await fetch(`${OPA_URL}/v1/data`, {
                 method: "PATCH",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify([{ op: "add", path: "/", value: params.data }]),
+                signal: AbortSignal.timeout(5_000),
               });
             }
           } catch (pushErr) {
@@ -2285,6 +2696,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
                 method: "PUT",
                 headers: { "content-type": "text/plain" },
                 body: row.module,
+                signal: AbortSignal.timeout(5_000),
               });
             }
             if (params.data !== undefined && row.data) {
@@ -2293,6 +2705,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
                 method: "PATCH",
                 headers: { "content-type": "application/json" },
                 body: JSON.stringify([{ op: "add", path: "/", value: row.data }]),
+                signal: AbortSignal.timeout(5_000),
               });
             }
           } catch (pushErr) {
@@ -2338,7 +2751,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
 
           // Remove from OPA
           try {
-            await fetch(`${OPA_URL}/v1/policies/${params.policy_id}`, { method: "DELETE" });
+            await fetch(`${OPA_URL}/v1/policies/${params.policy_id}`, { method: "DELETE", signal: AbortSignal.timeout(5_000) });
           } catch (pushErr) {
             console.warn("[pi-bridge] Failed to delete policy from OPA:", (pushErr as Error).message);
           }
@@ -2398,6 +2811,7 @@ function buildHistoryMessages(history: ThreadHistoryMessage[]): AppMessage[] {
 
 // ── Main ──────────────────────────────────────────────────────────────
 const sessions = new Map<string, AgentSession>();
+let shuttingDown = false;
 
 async function main() {
   console.log(`[pi-bridge] Connecting to NATS at ${NATS_URL}`);
@@ -2422,8 +2836,8 @@ async function main() {
     console.log(`[pi-bridge] agentd caps: ${agentdCaps.map(c => c.name).join(", ")}`);
   }
 
-  const sub = nc.subscribe(SESSION_START_SUBJECT);
-  console.log(`[pi-bridge] Listening on ${SESSION_START_SUBJECT}`);
+  const sub = nc.subscribe(SESSION_START_SUBJECT, { queue: "pi-bridge" });
+  console.log(`[pi-bridge] Listening on ${SESSION_START_SUBJECT} (queue: pi-bridge)`);
 
   const cleanupTimer = setInterval(() => {
     cleanupIdleSessions(nc).catch((err) => {
@@ -2431,7 +2845,50 @@ async function main() {
     });
   }, PI_SESSION_CLEANUP_INTERVAL_MS);
 
+  // Graceful shutdown handler
+  const SHUTDOWN_TIMEOUT_MS = 10_000;
+  const gracefulShutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[pi-bridge] ${signal} received, starting graceful shutdown...`);
+
+    // Stop accepting new sessions
+    sub.unsubscribe();
+    clearInterval(cleanupTimer);
+
+    // Close all active sessions
+    const sessionIds = [...sessions.keys()];
+    console.log(`[pi-bridge] Closing ${sessionIds.length} active session(s)...`);
+    for (const sessionId of sessionIds) {
+      closeSession(nc, sessionId, "shutdown");
+    }
+
+    // Drain NATS connection to flush pending publishes
+    try {
+      await nc.drain();
+      console.log("[pi-bridge] NATS connection drained");
+    } catch (err) {
+      console.warn("[pi-bridge] NATS drain error:", err);
+    }
+
+    console.log("[pi-bridge] Graceful shutdown complete");
+    process.exit(0);
+  };
+
+  // Hard timeout to force exit if graceful shutdown stalls
+  const forceExit = (signal: string) => {
+    setTimeout(() => {
+      console.error(`[pi-bridge] Shutdown timed out after ${SHUTDOWN_TIMEOUT_MS}ms, forcing exit`);
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS).unref();
+    gracefulShutdown(signal);
+  };
+
+  process.on("SIGTERM", () => forceExit("SIGTERM"));
+  process.on("SIGINT", () => forceExit("SIGINT"));
+
   for await (const msg of sub) {
+    if (shuttingDown) break;
     try {
       const request: SessionStartRequest = JSON.parse(sc.decode(msg.data));
       const response = await handleSessionStart(nc, request);
@@ -2476,10 +2933,10 @@ async function handleSessionStart(
   const effectiveProfile = applyUserOverrides(agentProfile, effectiveUser);
   console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Agent: ${effectiveProfile.id} (${effectiveProfile.display_name}) trusted=${effectiveProfile.trusted}`);
 
-  // Generate canary for untrusted agents
-  const canary = !effectiveProfile.trusted ? generateCanary() : null;
-  if (canary) {
-    console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Canary injected for untrusted agent`);
+  // Generate sigil challenge for untrusted agents
+  const sigil = !effectiveProfile.trusted ? generateSigilChallenge() : null;
+  if (sigil) {
+    console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Sigil protocol injected for untrusted agent`);
   }
 
   // Root span for the entire chat session lifecycle
@@ -2518,10 +2975,10 @@ async function handleSessionStart(
   const sessionCapTools = buildAgentdCapabilityTools(agentdCaps, sessionAgentdRef);
   const sessionFileTools = buildAgentdFileTools(sessionAgentdRef);
   const mcpTools = await fetchMcpTools();
-  const sessionMcpTools = buildAgentTools(mcpTools);
   const sessionNoteTools = buildNoteTools(effectiveUser);
   const sessionUserMgmtTools = buildUserManagementTools(effectiveUser);
-  const allTools = [...sessionMcpTools, ...sessionCapTools, ...sessionFileTools, ...sessionNoteTools, ...sessionUserMgmtTools];
+
+  // toolAccessCtx must be defined before buildMcpMetaTools (captured by closure)
   const toolAccessCtx: ToolAccessContext = {
     user_id: effectiveUser.id,
     username: effectiveUser.username,
@@ -2533,18 +2990,50 @@ async function handleSessionStart(
     trigger: (request.metadata?.trigger as string) ?? "chat",
     metadata: { ...request.metadata ?? {}, trusted: effectiveProfile.trusted },
   };
+
+  // Lazy MCP discovery: only core tools are first-class, rest via meta-tools
+  const sessionCoreMcpTools = buildCoreMcpTools(mcpTools);
+  const sessionMetaTools = buildMcpMetaTools(mcpTools, () => toolAccessCtx);
+  const allTools = [...sessionCoreMcpTools, ...sessionMetaTools, ...sessionCapTools, ...sessionFileTools, ...sessionNoteTools, ...sessionUserMgmtTools];
   const sessionTools = await evaluateToolAccess(toolAccessCtx, allTools);
 
+  // Sigil protocol is stateless (no hidden tool needed)
+
   console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Tools: ${sessionTools.length}/${allTools.length} (role=${effectiveUser.role})`);
+
+  // Filter MCP tools by role so the system prompt only shows accessible tools
+  const accessibleMcpTools = cachedPolicyData
+    ? mcpTools.filter(t => evaluateToolLocally(
+        effectiveUser.id, effectiveUser.role,
+        `${t.server}__${t.name}`, cachedPolicyData!
+      ))
+    : mcpTools;
+
+  // Derive server summary from role-filtered MCP tools
+  const serverCountMap: Record<string, number> = {};
+  for (const t of accessibleMcpTools) {
+    serverCountMap[t.server] = (serverCountMap[t.server] ?? 0) + 1;
+  }
+  const mcpServers: McpServerSummary[] = Object.entries(serverCountMap).map(
+    ([name, toolCount]) => ({ name, toolCount })
+  );
+
+  // Compute denied tools so the system prompt can describe access restrictions
+  const allowedNames = new Set(sessionTools.map((t: any) => t.name as string));
+  const deniedTools = allTools
+    .map((t: any) => t.name as string)
+    .filter((name: string) => !allowedNames.has(name));
 
   // Build system prompt: agent profile > base prompt, with platform + tool context
   let systemPrompt = buildSystemPrompt(effectiveProfile, effectiveUser, {
     metadata: request.metadata as Record<string, unknown> | undefined,
-    mcpTools,
+    mcpTools: accessibleMcpTools,
+    mcpServers,
     agentdCaps,
+    deniedTools,
   });
-  if (canary) {
-    systemPrompt = injectCanary(systemPrompt, canary.codeword);
+  if (sigil) {
+    systemPrompt = injectSigilProtocol(systemPrompt, sigil.nonce);
   }
 
   // Resolve LLM config from agent profile (user overrides already applied)
@@ -2556,7 +3045,25 @@ async function handleSessionStart(
   }
 
   // Create pi-agent with direct provider transport
-  const baseModel = getModel(effectiveProfile.provider as any, effectiveProfile.model_id as any);
+  let baseModel = getModel(effectiveProfile.provider as any, effectiveProfile.model_id as any);
+  // If the model isn't in the registry (e.g. glm-5 via z.ai), create an
+  // Anthropic-compatible model definition so the streaming layer knows which
+  // API wire format to use.
+  if (!baseModel) {
+    console.warn(`[pi-bridge] Model "${effectiveProfile.model_id}" not in registry, using anthropic-messages API format`);
+    baseModel = {
+      id: effectiveProfile.model_id,
+      name: effectiveProfile.model_id,
+      api: "anthropic-messages",
+      provider: effectiveProfile.provider ?? "anthropic",
+      baseUrl: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+      reasoning: false,
+      input: ["text", "image"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 200000,
+      maxTokens: 64000,
+    } as any;
+  }
   // Override baseUrl if ANTHROPIC_BASE_URL is set (e.g. for z.ai proxy)
   const model = process.env.ANTHROPIC_BASE_URL
     ? { ...baseModel, baseUrl: process.env.ANTHROPIC_BASE_URL }
@@ -2595,7 +3102,7 @@ async function handleSessionStart(
     steeringSub,
     responseSubject,
     agentd: sessionAgentdRef,
-    canaryExpected: canary?.expected ?? null,
+    sigilNonce: sigil?.nonce ?? null,
     sessionSpan,
     turnCount: 0,
     user: effectiveUser,
@@ -2690,7 +3197,21 @@ function cmdModel(session: AgentSession, arg: string): CommandResult {
   }
 
   try {
-    const newModel = getModel(provider as any, modelId as any);
+    let newModel = getModel(provider as any, modelId as any);
+    if (!newModel) {
+      newModel = {
+        id: modelId,
+        name: modelId,
+        api: "anthropic-messages",
+        provider: provider ?? "anthropic",
+        baseUrl: process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com",
+        reasoning: false,
+        input: ["text", "image"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 200000,
+        maxTokens: 64000,
+      } as any;
+    }
     const model = process.env.ANTHROPIC_BASE_URL
       ? { ...newModel, baseUrl: process.env.ANTHROPIC_BASE_URL }
       : newModel;
@@ -2861,7 +3382,7 @@ async function runAgentPrompt(
     return;
   }
 
-  const { agent, responseSubject, sessionSpan, agentd, canaryExpected } = session;
+  const { agent, responseSubject, sessionSpan, agentd, sigilNonce } = session;
   const turnIndex = session.turnCount++;
 
   // Clear attachment accumulator for this turn
@@ -2883,6 +3404,12 @@ async function runAgentPrompt(
   // Collect the full response from agent events
   let fullResponse = "";
 
+  // Streaming partial publish state
+  const PARTIAL_THROTTLE_MS = 300;
+  const PARTIAL_MIN_DELTA_CHARS = 200;
+  let lastPublishedContent = "";
+  let lastPublishTime = 0;
+
   // Track active tool spans
   const toolSpans = new Map<string, { span: Span; startTime: number }>();
 
@@ -2894,6 +3421,29 @@ async function runAgentPrompt(
           .filter((c: any) => c.type === "text")
           .map((c: any) => c.text);
         fullResponse = textParts.join("");
+
+        // Publish partial response if enough time/content has elapsed.
+        // Skip partials for untrusted agents — raw response is JSON that
+        // must pass sigil verification before being sent to the user.
+        if (!sigilNonce) {
+          const now = Date.now();
+          const deltaChars = fullResponse.length - lastPublishedContent.length;
+          if (
+            deltaChars >= PARTIAL_MIN_DELTA_CHARS ||
+            (now - lastPublishTime >= PARTIAL_THROTTLE_MS && deltaChars > 0)
+          ) {
+            lastPublishedContent = fullResponse;
+            lastPublishTime = now;
+            nc.publish(
+              responseSubject,
+              sc.encode(JSON.stringify({
+                type: "message",
+                content: stripLlmMarkup(fullResponse),
+                done: false,
+              }))
+            );
+          }
+        }
       }
     } else if (event.type === "tool_execution_start") {
       console.log(`[pi-bridge] [${sessionId.slice(0, 8)}] Tool: ${event.toolName}`);
@@ -2978,27 +3528,41 @@ async function runAgentPrompt(
         }
       }
       if (!fullResponse && lastMsg && "errorMessage" in lastMsg && lastMsg.errorMessage) {
-        console.error(`[pi-bridge] [${sessionId.slice(0, 8)}] API error: ${lastMsg.errorMessage}`);
-        fullResponse = `(error: ${lastMsg.errorMessage})`;
+        const rawErr = typeof lastMsg.errorMessage === "string" ? lastMsg.errorMessage : JSON.stringify(lastMsg.errorMessage);
+        console.error(`[pi-bridge] [${sessionId.slice(0, 8)}] API error: ${rawErr}`);
+        // Show a friendly message to the user instead of raw API errors
+        if (rawErr.includes('"500"') || rawErr.includes("500")) {
+          fullResponse = "Sorry, the AI service encountered an internal error. Please try again in a moment.";
+        } else if (rawErr.includes('"429"') || rawErr.includes("rate") || rawErr.includes("Rate")) {
+          fullResponse = "The AI service is currently rate-limited. Please wait a moment and try again.";
+        } else if (rawErr.includes('"401"') || rawErr.includes('"403"') || rawErr.includes("auth")) {
+          fullResponse = "There was an authentication error with the AI service. Please contact an administrator.";
+        } else {
+          fullResponse = "Sorry, something went wrong processing your request. Please try again.";
+        }
       }
     }
 
     // Drain any image attachments accumulated during this turn
     const turnAttachments = agentd.pendingAttachments.splice(0);
 
-    if (canaryExpected) {
-      const verification = verifyCanary(fullResponse || "", canaryExpected);
-      if (!verification.clean) {
-        console.warn(`[pi-bridge] [${sessionId.slice(0, 8)}] Canary verification failed for untrusted agent response`);
+    if (sigilNonce) {
+      const result = verifySigilResponse(fullResponse || "", sigilNonce);
+      if (!result.passed) {
+        console.warn(`[pi-bridge] [${sessionId.slice(0, 8)}] Sigil verification failed: ${result.violations.join("; ")}`);
         turnSpan.setStatus({
           code: SpanStatusCode.ERROR,
-          message: "canary_verification_failed",
+          message: "sigil_verification_failed",
         });
         fullResponse = "Response blocked: integrity verification failed for untrusted agent output.";
       } else {
-        fullResponse = verification.stripped;
+        fullResponse = result.response;
       }
     }
+
+    // Strip leaked LLM internal markup (thinking tags, tool-call XML) that
+    // some models emit as plain text content blocks.
+    fullResponse = stripLlmMarkup(fullResponse);
 
     console.log(
       `[pi-bridge] [${sessionId.slice(0, 8)}] Response: ${fullResponse.length} chars, ${turnAttachments.length} attachments`

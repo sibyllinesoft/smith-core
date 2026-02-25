@@ -334,7 +334,7 @@ async fn create_pairing_code(
 
     // Verify bearer token when configured.
     if let Some(expected) = &state.admin_token {
-        if bearer_from_headers(&headers).as_deref() != Some(expected.as_str()) {
+        if bearer_from_headers(&headers) != Some(expected.as_str()) {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": "unauthorized"})),
@@ -394,9 +394,7 @@ fn require_telegram_auth(
                 .into_response(),
         );
     }
-    let Some(expected) = state.telegram_webhook_secret.as_deref() else {
-        return None;
-    };
+    let expected = state.telegram_webhook_secret.as_deref()?;
     let provided = headers
         .get("x-telegram-bot-api-secret-token")
         .and_then(|v| v.to_str().ok())
@@ -429,9 +427,7 @@ fn require_discord_auth(
         );
     }
 
-    let Some(public_key_hex) = state.discord_public_key.as_deref() else {
-        return None;
-    };
+    let public_key_hex = state.discord_public_key.as_deref()?;
     let Some(signature_hex) = headers
         .get("x-signature-ed25519")
         .and_then(|v| v.to_str().ok())
@@ -486,9 +482,7 @@ fn require_whatsapp_auth(
         );
     }
 
-    let Some(secret) = state.whatsapp_app_secret.as_deref() else {
-        return None;
-    };
+    let secret = state.whatsapp_app_secret.as_deref()?;
     let Some(signature) = headers
         .get("x-hub-signature-256")
         .and_then(|v| v.to_str().ok())

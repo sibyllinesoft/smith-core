@@ -53,6 +53,14 @@ struct Cli {
     /// Max messages to fetch for thread context (0 = disabled)
     #[arg(long, env = "DISCORD_THREAD_HISTORY_LIMIT", default_value_t = 20)]
     thread_history_limit: u32,
+
+    /// Automatically create a Discord thread when a new conversation starts in a guild channel
+    #[arg(long, env = "DISCORD_AUTO_THREAD", default_value_t = false)]
+    auto_thread: bool,
+
+    /// Auto-archive duration for auto-created threads (minutes: 60, 1440, 4320, 10080)
+    #[arg(long, env = "DISCORD_AUTO_THREAD_ARCHIVE_MINUTES", default_value_t = 60)]
+    auto_thread_archive_minutes: u32,
 }
 
 const DISCORD_GATEWAY_URL: &str = "wss://gateway.discord.gg/?v=10&encoding=json";
@@ -302,7 +310,7 @@ async fn handle_message_create(
     let sender_display = author
         .and_then(|a| a.get("global_name"))
         .and_then(|v| v.as_str())
-        .or_else(|| sender_username);
+        .or(sender_username);
 
     // Parse timestamp to unix epoch
     let _unix_ts = chrono::DateTime::parse_from_rfc3339(timestamp)
@@ -358,8 +366,16 @@ async fn handle_message_create(
         is_bot: false,
     };
 
+    // Resolve human-readable names for channel and guild so the agent has context.
+    let channel_name = fetch_channel_name(http, &cli.bot_token, channel_id).await;
+    let guild_name = if !guild_id.is_empty() {
+        fetch_guild_name(http, &cli.bot_token, guild_id).await
+    } else {
+        None
+    };
+
     let history_len = thread_history.len();
-    let envelope = build_envelope(
+    let mut envelope = build_envelope(
         "discord",
         guild_id,
         channel_id,
@@ -371,6 +387,35 @@ async fn handle_message_create(
         attachments,
         thread_history,
     );
+
+    // Inject resolved names into the envelope for the daemon/pi-bridge
+    if let Some(name) = &channel_name {
+        envelope["channel_name"] = json!(name);
+    }
+    if let Some(name) = &guild_name {
+        envelope["team_name"] = json!(name);
+    }
+
+    // Auto-thread creation: when a new conversation starts in a guild channel,
+    // create a Discord thread so the conversation is contained.
+    if cli.auto_thread && !guild_id.is_empty() && thread_root == message_id {
+        let thread_name = sanitize_thread_name(content, message_id);
+        if let Some(thread_channel_id) = create_thread_on_message(
+            http,
+            &cli.bot_token,
+            channel_id,
+            message_id,
+            &thread_name,
+            cli.auto_thread_archive_minutes,
+        )
+        .await
+        {
+            // Rewrite channel_id so the entire downstream pipeline (daemon
+            // ThreadRecord, session watcher, reply routing) targets the thread.
+            // Discord threads ARE channels — no adapter changes needed.
+            envelope["channel_id"] = json!(thread_channel_id);
+        }
+    }
 
     let payload = serde_json::to_vec(&envelope)?;
 
@@ -390,6 +435,97 @@ async fn handle_message_create(
     nats.flush().await.context("failed to flush NATS")?;
 
     Ok(())
+}
+
+/// Strip Discord mention syntax and produce a clean thread name.
+///
+/// Removes `<@123>`, `<@&123>`, `<#123>` patterns, collapses whitespace, and
+/// truncates to 80 characters. Falls back to `"Thread {fallback_id}"` if the
+/// result is empty.
+fn sanitize_thread_name(text: &str, fallback_id: &str) -> String {
+    // Strip Discord mentions: <@123>, <@&123>, <#123>
+    let cleaned = regex_lite::Regex::new(r"<[@#][&!]?\d+>")
+        .unwrap()
+        .replace_all(text, "");
+    // Collapse whitespace and trim
+    let collapsed: String = cleaned
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = collapsed.trim();
+
+    if trimmed.is_empty() {
+        return format!("Thread {fallback_id}");
+    }
+
+    if trimmed.len() <= 80 {
+        trimmed.to_string()
+    } else {
+        // Truncate at 80 chars on a char boundary
+        let mut end = 80;
+        while !trimmed.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        trimmed[..end].to_string()
+    }
+}
+
+/// Create a Discord thread on an existing message.
+///
+/// Returns the new thread's channel ID on success, or `None` on failure.
+async fn create_thread_on_message(
+    http: &reqwest::Client,
+    bot_token: &str,
+    channel_id: &str,
+    message_id: &str,
+    name: &str,
+    archive_minutes: u32,
+) -> Option<String> {
+    let url = format!(
+        "https://discord.com/api/v10/channels/{channel_id}/messages/{message_id}/threads"
+    );
+
+    let body = serde_json::json!({
+        "name": name,
+        "auto_archive_duration": archive_minutes,
+    });
+
+    let resp = match http
+        .post(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .json(&body)
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(err) => {
+            warn!(error = ?err, channel_id, message_id, "Failed to create thread on message");
+            return None;
+        }
+    };
+
+    if resp.status().is_success() {
+        let data: Value = resp.json().await.ok()?;
+        let thread_id = data.get("id")?.as_str()?.to_string();
+        info!(
+            thread_id = %thread_id,
+            channel_id,
+            message_id,
+            "Auto-created Discord thread"
+        );
+        Some(thread_id)
+    } else {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        warn!(
+            status = %status,
+            body = %body_text,
+            channel_id,
+            message_id,
+            "Discord API error creating thread"
+        );
+        None
+    }
 }
 
 async fn fetch_thread_history(
@@ -489,6 +625,56 @@ async fn read_next_text(
     Err(anyhow::anyhow!("WebSocket stream ended"))
 }
 
+/// Fetch a channel's name from the Discord API.
+async fn fetch_channel_name(
+    http: &reqwest::Client,
+    bot_token: &str,
+    channel_id: &str,
+) -> Option<String> {
+    let url = format!("https://discord.com/api/v10/channels/{channel_id}");
+    let resp = http
+        .get(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    // DM channels have type 1 and no name — use the recipients list
+    let channel_type = body.get("type").and_then(|v| v.as_u64()).unwrap_or(0);
+    if channel_type == 1 {
+        // DM channel
+        return Some("DM".to_string());
+    }
+    body.get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+/// Fetch a guild's name from the Discord API.
+async fn fetch_guild_name(
+    http: &reqwest::Client,
+    bot_token: &str,
+    guild_id: &str,
+) -> Option<String> {
+    let url = format!("https://discord.com/api/v10/guilds/{guild_id}");
+    let resp = http
+        .get(&url)
+        .header("Authorization", format!("Bot {bot_token}"))
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: Value = resp.json().await.ok()?;
+    body.get("name")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 #[derive(Debug, Deserialize)]
 struct GatewayEvent {
     op: u8,
@@ -498,4 +684,58 @@ struct GatewayEvent {
     s: Option<u64>,
     #[serde(default)]
     t: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_strips_mentions() {
+        let result = sanitize_thread_name("Hey <@123456> check <#789>", "msg1");
+        assert_eq!(result, "Hey check");
+    }
+
+    #[test]
+    fn sanitize_strips_role_mentions() {
+        let result = sanitize_thread_name("<@&999> alert!", "msg1");
+        assert_eq!(result, "alert!");
+    }
+
+    #[test]
+    fn sanitize_collapses_whitespace() {
+        let result = sanitize_thread_name("hello    world   foo", "msg1");
+        assert_eq!(result, "hello world foo");
+    }
+
+    #[test]
+    fn sanitize_fallback_on_empty() {
+        let result = sanitize_thread_name("<@123>", "msg42");
+        assert_eq!(result, "Thread msg42");
+    }
+
+    #[test]
+    fn sanitize_fallback_on_blank() {
+        let result = sanitize_thread_name("   ", "msg7");
+        assert_eq!(result, "Thread msg7");
+    }
+
+    #[test]
+    fn sanitize_truncates_long_text() {
+        let long = "a".repeat(200);
+        let result = sanitize_thread_name(&long, "msg1");
+        assert_eq!(result.len(), 80);
+    }
+
+    #[test]
+    fn sanitize_preserves_normal_text() {
+        let result = sanitize_thread_name("How do I deploy to prod?", "msg1");
+        assert_eq!(result, "How do I deploy to prod?");
+    }
+
+    #[test]
+    fn sanitize_strips_nick_mentions() {
+        let result = sanitize_thread_name("Hey <@!123456> what's up", "msg1");
+        assert_eq!(result, "Hey what's up");
+    }
 }

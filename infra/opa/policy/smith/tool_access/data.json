@@ -1,0 +1,38 @@
+{
+  "roles": {
+    "admin": {
+      "default": "allow",
+      "exceptions": {}
+    },
+    "user": {
+      "default": "allow",
+      "exceptions": {
+        "agentd__edit_file": true,
+        "agentd__shell.exec.v1": true,
+        "agentd__write_file": true
+      }
+    },
+    "guest": {
+      "default": "deny",
+      "exceptions": {
+        "notes__search": true,
+        "postgres__query": true,
+        "discord__discord_read_messages": true,
+        "discord__discord_get_server_info": true,
+        "discord__discord_get_forum_channels": true,
+        "discord__discord_get_forum_post": true,
+        "discord__discord_list_guilds": true,
+        "discord__discord_list_guild_members": true,
+        "google-analytics__get_account_summaries": true,
+        "google-analytics__list_google_ads_links": true,
+        "google-analytics__get_property_details": true,
+        "google-analytics__get_custom_dimensions_and_metrics": true,
+        "google-analytics__run_realtime_report": true,
+        "google-analytics__run_report": true
+      }
+    }
+  },
+  "user_overrides": {},
+  "source_restrictions": {},
+  "untrusted_allowed_tools": {}
+}

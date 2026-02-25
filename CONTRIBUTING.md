@@ -22,10 +22,12 @@ Run these before opening a pull request:
 
 ```bash
 cargo check --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace -- -D warnings
 # agentd lives in a separate repo (set AGENTD_ROOT in .env):
 cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml
 npm run build --workspaces --if-present
-cd installer && npm test
+npm run test --workspace installer
 ```
 
 ## Pull Request Guidelines

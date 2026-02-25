@@ -20,7 +20,8 @@
     "src/index.ts",
     "src/cli.ts",
     "src/agents.ts",
-    "src/lib.ts"
+    "src/lib.ts",
+    "src/smith.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

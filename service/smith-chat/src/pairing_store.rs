@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use deadpool_postgres::Pool;
 use rand::Rng;
 use redis::{aio::ConnectionManager, AsyncCommands};
 use serde::{Deserialize, Serialize};
@@ -7,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::message::ChatPlatform;
 
 /// Policy governing how DMs are handled before processing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DmPolicy {
     /// Users must submit a pairing code before messages are processed.
@@ -15,13 +16,8 @@ pub enum DmPolicy {
     /// Users must be on an allowlist to send messages.
     Allowlist,
     /// All DMs are processed without restriction.
+    #[default]
     Open,
-}
-
-impl Default for DmPolicy {
-    fn default() -> Self {
-        Self::Open
-    }
 }
 
 impl std::str::FromStr for DmPolicy {
@@ -51,9 +47,12 @@ pub struct Pairing {
     pub metadata: serde_json::Value,
 }
 
-/// Redis-backed store for managing pairing codes and active pairings.
+/// Redis-backed store for managing pairing codes and active pairings,
+/// with Postgres as the durable backend. Redis is the fast-path cache;
+/// Postgres is the source of truth for redeemed pairings.
 pub struct PairingStore {
     manager: ConnectionManager,
+    pg_pool: Pool,
     /// TTL for unredeemed pairing codes (seconds).
     pub code_ttl_secs: u64,
     /// TTL for active (redeemed) pairings (seconds).
@@ -61,7 +60,12 @@ pub struct PairingStore {
 }
 
 impl PairingStore {
-    pub async fn new(redis_url: &str, code_ttl_secs: u64, pairing_ttl_secs: u64) -> Result<Self> {
+    pub async fn new(
+        redis_url: &str,
+        pg_pool: Pool,
+        code_ttl_secs: u64,
+        pairing_ttl_secs: u64,
+    ) -> Result<Self> {
         let client = redis::Client::open(redis_url.to_string())
             .with_context(|| format!("failed to open redis for pairing store: {redis_url}"))?;
         let manager = client
@@ -70,9 +74,15 @@ impl PairingStore {
             .context("failed to connect to redis for pairing store")?;
         Ok(Self {
             manager,
+            pg_pool,
             code_ttl_secs,
             pairing_ttl_secs,
         })
+    }
+
+    /// Return a clone of the Redis connection manager for external callers.
+    pub fn redis_conn(&self) -> ConnectionManager {
+        self.manager.clone()
     }
 
     /// Generate a short alphanumeric pairing code and store it mapped to `agent_id`.
@@ -130,6 +140,15 @@ impl PairingStore {
             .await
             .context("failed to store active pairing")?;
 
+        // Persist to Postgres (source of truth).
+        let platform_str = format!("{platform:?}").to_lowercase();
+        if let Err(err) = self
+            .pg_upsert_pairing(&platform_str, user_id, &pairing.agent_id, channel_id)
+            .await
+        {
+            tracing::warn!(error = ?err, "Failed to persist pairing to Postgres (Redis cache still set)");
+        }
+
         Ok(Some(pairing))
     }
 
@@ -152,17 +171,128 @@ impl PairingStore {
                     serde_json::from_str(&data).context("failed to deserialize pairing record")?;
                 Ok(Some(pairing))
             }
-            None => Ok(None),
+            None => {
+                // Redis miss — try Postgres fallback.
+                let platform_str = format!("{platform:?}").to_lowercase();
+                match self.pg_lookup_pairing(&platform_str, user_id).await {
+                    Ok(Some(pairing)) => {
+                        // Backfill Redis cache so subsequent lookups are fast.
+                        if let Ok(payload) = serde_json::to_string(&pairing) {
+                            let _ = conn
+                                .set_ex::<_, _, ()>(&key, &payload, self.pairing_ttl_secs)
+                                .await;
+                        }
+                        Ok(Some(pairing))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(err) => {
+                        tracing::warn!(error = ?err, "Postgres pairing lookup failed");
+                        Ok(None)
+                    }
+                }
+            }
         }
     }
 
-    /// Revoke an active pairing for a platform user.
+    /// Revoke an active pairing for a platform user (removes from both Redis and Postgres).
     pub async fn revoke(&self, platform: ChatPlatform, user_id: &str) -> Result<()> {
         let key = Self::active_key(platform, user_id);
         let mut conn = self.manager.clone();
         conn.del::<_, ()>(&key)
             .await
-            .context("failed to revoke pairing")?;
+            .context("failed to revoke pairing from redis")?;
+
+        let platform_str = format!("{platform:?}").to_lowercase();
+        if let Err(err) = self.pg_delete_pairing(&platform_str, user_id).await {
+            tracing::warn!(error = ?err, "Failed to delete pairing from Postgres");
+        }
+        Ok(())
+    }
+
+    /// Upsert a pairing row in Postgres.
+    async fn pg_upsert_pairing(
+        &self,
+        platform: &str,
+        platform_user_id: &str,
+        agent_id: &str,
+        channel_id: &str,
+    ) -> Result<()> {
+        let client = self.pg_pool.get().await.context("pool connection")?;
+        client
+            .execute(
+                "INSERT INTO chat_pairings (platform, platform_user_id, agent_id, channel_id)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (platform, platform_user_id)
+                 DO UPDATE SET agent_id = $3, channel_id = $4, created_at = NOW()",
+                &[&platform, &platform_user_id, &agent_id, &channel_id],
+            )
+            .await
+            .context("failed to upsert pairing in postgres")?;
+        Ok(())
+    }
+
+    /// Look up a pairing from Postgres. Returns a Pairing with a far-future
+    /// `expires_at` since Postgres pairings are permanent.
+    async fn pg_lookup_pairing(
+        &self,
+        platform: &str,
+        platform_user_id: &str,
+    ) -> Result<Option<Pairing>> {
+        let client = self.pg_pool.get().await.context("pool connection")?;
+        let row = client
+            .query_opt(
+                "SELECT agent_id, channel_id, created_at FROM chat_pairings
+                 WHERE platform = $1 AND platform_user_id = $2",
+                &[&platform, &platform_user_id],
+            )
+            .await
+            .context("failed to query pairing from postgres")?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let agent_id: String = row.get("agent_id");
+        let channel_id: String = row.get("channel_id");
+        let created_at: chrono::DateTime<Utc> = row.get("created_at");
+
+        let chat_platform = match platform {
+            "slack" => ChatPlatform::Slack,
+            "teams" => ChatPlatform::Teams,
+            "mattermost" => ChatPlatform::Mattermost,
+            "telegram" => ChatPlatform::Telegram,
+            "discord" => ChatPlatform::Discord,
+            "whatsapp" => ChatPlatform::WhatsApp,
+            "signal" => ChatPlatform::Signal,
+            "googlechat" => ChatPlatform::GoogleChat,
+            "imessage" => ChatPlatform::IMessage,
+            "matrix" => ChatPlatform::Matrix,
+            _ => ChatPlatform::Unknown,
+        };
+
+        Ok(Some(Pairing {
+            code: String::new(),
+            agent_id,
+            platform: chat_platform,
+            user_id: platform_user_id.to_string(),
+            channel_id,
+            created_at,
+            // Postgres pairings are permanent — set expiry far in the future.
+            expires_at: Utc::now() + chrono::Duration::days(365 * 100),
+            metadata: serde_json::Value::Null,
+        }))
+    }
+
+    /// Delete a pairing from Postgres.
+    async fn pg_delete_pairing(&self, platform: &str, platform_user_id: &str) -> Result<()> {
+        let client = self.pg_pool.get().await.context("pool connection")?;
+        client
+            .execute(
+                "DELETE FROM chat_pairings WHERE platform = $1 AND platform_user_id = $2",
+                &[&platform, &platform_user_id],
+            )
+            .await
+            .context("failed to delete pairing from postgres")?;
         Ok(())
     }
 

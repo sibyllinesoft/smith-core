@@ -20,11 +20,12 @@ use crate::{
 use anyhow::{Context, Result};
 use async_nats::{Client as NatsClient, Message};
 use clap::Parser;
-use futures::{SinkExt, StreamExt};
+use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
+use futures::{FutureExt, SinkExt, StreamExt};
 use redis::{aio::ConnectionManager, AsyncCommands};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::{signal, sync::Mutex, time::timeout};
+use tokio::{signal, sync::watch, sync::Mutex, time::timeout};
 use tokio_tungstenite::{connect_async, tungstenite::protocol::Message as WsMessage};
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::{fmt, EnvFilter};
@@ -50,11 +51,7 @@ pub struct Cli {
     event_secret: Option<String>,
 
     /// Logical label used in logs/metrics
-    #[arg(
-        long,
-        env = "CHAT_BRIDGE_ADAPTER_LABEL",
-        default_value = "mattermost-ingest"
-    )]
+    #[arg(long, env = "CHAT_BRIDGE_ADAPTER_LABEL", default_value = "chat-bridge")]
     adapter_label: String,
 
     /// Redis connection string (shared with observability stack)
@@ -172,6 +169,12 @@ pub struct Cli {
         default_value = "postgresql://smith:smith-dev@localhost:5432/smith"
     )]
     database_url: String,
+
+    /// Message debounce window in milliseconds (0 = disabled).
+    /// When enabled, rapid successive messages from the same user in the same
+    /// thread are batched into a single combined message.
+    #[arg(long, env = "CHAT_BRIDGE_DEBOUNCE_MS", default_value_t = 1500)]
+    debounce_ms: u64,
 }
 
 #[derive(Clone)]
@@ -187,8 +190,10 @@ struct AppState {
     allowlist: Option<Arc<Allowlist>>,
     dm_policy: DmPolicy,
     identity_secret: Option<Vec<u8>>,
-    database_url: String,
+    pg_pool: Pool,
     active_sessions: Arc<AtomicU32>,
+    /// Typing indicator cancellation senders, keyed by "channel_id:thread_root".
+    typing_stops: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
 }
 
 impl AppState {
@@ -232,7 +237,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         toml::from_str(&bridge_config_str).with_context(|| "failed to parse chat bridge config")?;
     let chat_bridge = Arc::new(ChatBridge::build_from_config(bridge_config).await?);
 
-    let client = async_nats::connect(&cli.nats_url)
+    let client = async_nats::ConnectOptions::new()
+        .request_timeout(Some(Duration::from_secs(cli.session_timeout_secs)))
+        .connect(&cli.nats_url)
         .await
         .with_context(|| format!("failed to connect to NATS at {}", cli.nats_url))?;
     info!(url = %cli.nats_url, "Connected to NATS");
@@ -251,10 +258,38 @@ pub async fn run(cli: Cli) -> Result<()> {
         .parse()
         .map_err(|e: String| anyhow::anyhow!(e))?;
 
+    // Build PostgreSQL connection pool
+    let pg_config: tokio_postgres::Config = cli
+        .database_url
+        .parse()
+        .context("failed to parse DATABASE_URL")?;
+    let pg_mgr = Manager::from_config(
+        pg_config,
+        tokio_postgres::NoTls,
+        ManagerConfig {
+            recycling_method: RecyclingMethod::Fast,
+        },
+    );
+    let pg_pool = Pool::builder(pg_mgr)
+        .max_size(8)
+        .build()
+        .context("failed to build postgres connection pool")?;
+    // Verify connectivity at startup
+    let _ = pg_pool
+        .get()
+        .await
+        .context("failed to connect to postgres via pool")?;
+    info!("PostgreSQL connection pool ready (max_size=8)");
+
     let pairing_store = Arc::new(
-        PairingStore::new(&cli.redis_url, cli.pairing_code_ttl, cli.pairing_ttl)
-            .await
-            .context("failed to create pairing store")?,
+        PairingStore::new(
+            &cli.redis_url,
+            pg_pool.clone(),
+            cli.pairing_code_ttl,
+            cli.pairing_ttl,
+        )
+        .await
+        .context("failed to create pairing store")?,
     );
 
     let allowlist = if let Some(path) = &cli.allowlist_config {
@@ -281,8 +316,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         allowlist,
         dm_policy,
         identity_secret,
-        database_url: cli.database_url.clone(),
+        pg_pool,
         active_sessions: Arc::new(AtomicU32::new(0)),
+        typing_stops: Arc::new(Mutex::new(HashMap::new())),
     });
 
     // Spawn webhook ingestion server.
@@ -318,6 +354,25 @@ pub async fn run(cli: Cli) -> Result<()> {
         .await
         .with_context(|| format!("failed to subscribe to {}", cli.ingest_subject))?;
 
+    // Optionally set up message debouncing.
+    let debouncer = if cli.debounce_ms > 0 {
+        let debounce_state = Arc::clone(&state);
+        let (debouncer, _handle) =
+            crate::debounce::Debouncer::spawn(cli.debounce_ms, move |envelope| {
+                let st = Arc::clone(&debounce_state);
+                tokio::spawn(async move {
+                    if let Err(err) = process_envelope(st, envelope).await {
+                        error!(error = ?err, "Failed to process debounced message");
+                    }
+                });
+            });
+        info!(debounce_ms = cli.debounce_ms, "Message debouncing enabled");
+        Some(debouncer)
+    } else {
+        info!("Message debouncing disabled");
+        None
+    };
+
     let shutdown = shutdown_signal();
     tokio::pin!(shutdown);
 
@@ -325,12 +380,30 @@ pub async fn run(cli: Cli) -> Result<()> {
         tokio::select! {
             _ = &mut shutdown => {
                 info!("Shutdown signal received; exiting");
+                // Drop the debouncer so its channel closes and it flushes pending buffers.
+                drop(debouncer);
                 break;
             }
             maybe_msg = subscriber.next() => {
                 match maybe_msg {
                     Some(msg) => {
-                        tokio::spawn(handle_message(Arc::clone(&state), msg));
+                        if let Some(ref debouncer) = debouncer {
+                            match serde_json::from_slice::<BridgeMessageEnvelope>(&msg.payload) {
+                                Ok(envelope) => {
+                                    if let Err(env) = debouncer.send(envelope) {
+                                        warn!(post_id = %env.post_id, "Debouncer channel closed, processing directly");
+                                        tokio::spawn(process_envelope(Arc::clone(&state), env).map(|r| {
+                                            if let Err(err) = r { error!(error = ?err, "Failed to process message"); }
+                                        }));
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(error = ?err, "Failed to parse bridge message JSON");
+                                }
+                            }
+                        } else {
+                            tokio::spawn(handle_message(Arc::clone(&state), msg));
+                        }
                     }
                     None => {
                         warn!("NATS subscription closed; exiting");
@@ -377,6 +450,12 @@ async fn handle_message(state: Arc<AppState>, msg: Message) {
 async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
     let envelope: BridgeMessageEnvelope = serde_json::from_slice(&msg.payload)
         .with_context(|| "failed to parse bridge message JSON")?;
+    process_envelope(state, envelope).await
+}
+
+/// Core envelope processing logic, separated from deserialization so the
+/// debouncer can call it directly with a combined envelope.
+async fn process_envelope(state: Arc<AppState>, envelope: BridgeMessageEnvelope) -> Result<()> {
 
     if let Some(expected) = &state.config.event_secret {
         match envelope.secret.as_deref() {
@@ -430,9 +509,11 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
 
     // DM pairing gate
     if state.dm_policy == DmPolicy::Pairing {
+        let is_dm = envelope.team_id.is_empty();
         let trimmed = envelope.message.trim();
-        // Check if this is a pairing code submission (6 alphanumeric chars)
-        if trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
+
+        // Only accept pairing codes in DMs
+        if is_dm && trimmed.len() == 6 && trimmed.chars().all(|c| c.is_ascii_alphanumeric()) {
             let code = trimmed.to_uppercase();
             match state
                 .pairing_store
@@ -445,6 +526,36 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
                         sender_id = %envelope.sender.id,
                         "Pairing code redeemed successfully"
                     );
+
+                    // Auto-create user identity so pi-bridge resolves this
+                    // user with proper role/tool access on subsequent turns.
+                    let username = envelope
+                        .sender
+                        .username
+                        .as_deref()
+                        .unwrap_or(&envelope.sender.id);
+                    let display_name = envelope.sender.display_name.as_deref().unwrap_or(username);
+                    match ensure_user_identity(
+                        &state.pg_pool,
+                        &envelope.platform,
+                        &envelope.sender.id,
+                        username,
+                        display_name,
+                    )
+                    .await
+                    {
+                        Ok(role) => info!(
+                            platform = %envelope.platform,
+                            sender_id = %envelope.sender.id,
+                            role,
+                            "User identity linked on pairing"
+                        ),
+                        Err(err) => warn!(
+                            error = ?err,
+                            "Failed to auto-create user identity on pairing"
+                        ),
+                    }
+
                     send_reply(
                         &state,
                         &envelope,
@@ -472,13 +583,50 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
         {
             Ok(Some(_)) => { /* paired, continue processing */ }
             Ok(None) => {
-                send_reply(
-                    &state,
-                    &envelope,
-                    "You are not paired with an agent. Please submit a 6-character pairing code.",
-                )
-                .await?;
-                return Ok(());
+                // No pairing — check if the user has a known identity in the
+                // database (e.g. admin-created). If so, auto-create a pairing
+                // so they don't need to go through the code flow.
+                let has_identity =
+                    check_known_identity(&state.pg_pool, &envelope.platform, &envelope.sender.id)
+                        .await;
+
+                if has_identity {
+                    info!(
+                        sender_id = %envelope.sender.id,
+                        platform = %envelope.platform,
+                        "Auto-pairing user with existing identity"
+                    );
+                    // Create a pairing so future lookups hit the fast path.
+                    if let Err(err) = auto_create_pairing(
+                        &state.pairing_store,
+                        platform,
+                        &envelope.sender.id,
+                        &envelope.channel_id,
+                        &state.agent_id,
+                        state.pairing_store.pairing_ttl_secs,
+                    )
+                    .await
+                    {
+                        warn!(error = ?err, "Failed to auto-create pairing from identity");
+                    }
+                } else if is_dm {
+                    // DM from unpaired user — prompt them to pair
+                    send_reply(
+                        &state,
+                        &envelope,
+                        "You are not paired with an agent. Please submit a 6-character pairing code.",
+                    )
+                    .await?;
+                    return Ok(());
+                } else {
+                    // Guild message from unpaired user — silently ignore
+                    debug!(
+                        sender_id = %envelope.sender.id,
+                        channel_id = %envelope.channel_id,
+                        "Ignoring guild message from unpaired user"
+                    );
+                    return Ok(());
+                }
             }
             Err(err) => {
                 warn!(error = ?err, "Failed to look up pairing");
@@ -501,7 +649,7 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
 
     if is_new_session {
         // Enforce per-agent concurrent session limit
-        let max = fetch_max_concurrent_sessions(&state.database_url, &state.agent_id).await;
+        let max = fetch_max_concurrent_sessions(&state.pg_pool, &state.agent_id).await;
         let active = state.active_sessions.load(Ordering::Relaxed);
         if active >= max {
             info!(
@@ -536,17 +684,17 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
     }
 
     // Deliver the user message via steering (request/reply with timeout for liveness check).
-    // For new sessions this triggers the agent; for existing sessions it's a follow-up.
-    if let Err(e) = publish_user_message(&state, &record, &envelope).await {
-        if is_new_session {
-            // Brand new session failed immediately — propagate the error
-            state.active_sessions.fetch_sub(1, Ordering::Relaxed);
-            return Err(e);
-        }
+    // Skip for new sessions — the goal is already delivered in the session start request,
+    // and pi-bridge fires runAgentPrompt immediately. Sending again causes double-prompt.
+    if !is_new_session
+        && publish_user_message(&state, &record, &envelope)
+            .await
+            .is_err()
+    {
         // Existing session appears dead — recreate and retry
-        warn!(error = ?e, session_id = ?record.session_id, "Session appears dead, creating new session");
+        warn!(session_id = ?record.session_id, "Session appears dead, creating new session");
 
-        let max = fetch_max_concurrent_sessions(&state.database_url, &state.agent_id).await;
+        let max = fetch_max_concurrent_sessions(&state.pg_pool, &state.agent_id).await;
         let active = state.active_sessions.load(Ordering::Relaxed);
         if active >= max {
             send_reply(
@@ -586,6 +734,21 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
         .await
         .context("failed to persist thread record")?;
 
+    // Start typing indicator (cancels any existing one for this thread)
+    {
+        let key = typing_key(&record.channel_id, &record.thread_root);
+        let (tx, rx) = watch::channel(false);
+        // Cancel any prior typing loop for this thread before starting a new one
+        if let Some(old) = state.typing_stops.lock().await.insert(key, tx) {
+            let _ = old.send(true);
+        }
+        let typing_state = Arc::clone(&state);
+        let channel_id = record.channel_id.clone();
+        tokio::spawn(async move {
+            typing_loop(typing_state, channel_id, rx).await;
+        });
+    }
+
     state
         .session_watchers
         .ensure_watching(Arc::clone(&state), record)
@@ -595,59 +758,59 @@ async fn process_message(state: Arc<AppState>, msg: Message) -> Result<()> {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-struct HistoryMessage {
-    role: String,
-    content: String,
+pub struct HistoryMessage {
+    pub role: String,
+    pub content: String,
     #[serde(default)]
-    username: Option<String>,
+    pub username: Option<String>,
     #[serde(default)]
-    timestamp: Option<String>,
+    pub timestamp: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-struct BridgeMessageEnvelope {
-    platform: String,
-    team_id: String,
+pub struct BridgeMessageEnvelope {
+    pub platform: String,
+    pub team_id: String,
     #[serde(default)]
-    team_name: Option<String>,
-    channel_id: String,
+    pub team_name: Option<String>,
+    pub channel_id: String,
     #[serde(default)]
-    channel_name: Option<String>,
-    post_id: String,
-    thread_root: String,
-    message: String,
+    pub channel_name: Option<String>,
+    pub post_id: String,
+    pub thread_root: String,
+    pub message: String,
     #[serde(default)]
-    props: HashMap<String, Value>,
+    pub props: HashMap<String, Value>,
     #[serde(default)]
-    attachments: Vec<AttachmentEnvelope>,
-    timestamp: i64,
+    pub attachments: Vec<AttachmentEnvelope>,
+    pub timestamp: i64,
     #[serde(default)]
-    secret: Option<String>,
-    sender: SenderEnvelope,
+    pub secret: Option<String>,
+    pub sender: SenderEnvelope,
     #[serde(default)]
-    thread_history: Vec<HistoryMessage>,
+    pub thread_history: Vec<HistoryMessage>,
 }
 
-#[derive(Debug, Deserialize)]
-struct AttachmentEnvelope {
-    id: String,
-    name: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct AttachmentEnvelope {
+    pub id: String,
+    pub name: String,
     #[serde(default)]
-    mime_type: Option<String>,
-    size_bytes: i64,
+    pub mime_type: Option<String>,
+    pub size_bytes: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
-struct SenderEnvelope {
-    id: String,
+pub struct SenderEnvelope {
+    pub id: String,
     #[serde(default)]
-    username: Option<String>,
+    pub username: Option<String>,
     #[serde(default)]
-    display_name: Option<String>,
+    pub display_name: Option<String>,
     #[serde(default)]
-    is_bot: bool,
+    pub is_bot: bool,
 }
 
 struct ThreadStore {
@@ -784,15 +947,9 @@ const DEFAULT_MAX_CONCURRENT_SESSIONS: u32 = 10;
 
 /// Read `max_concurrent_sessions` from `agents.config` JSONB in Postgres.
 /// Returns the default if the agent row doesn't exist or the key is absent.
-async fn fetch_max_concurrent_sessions(database_url: &str, agent_id: &str) -> u32 {
+async fn fetch_max_concurrent_sessions(pool: &Pool, agent_id: &str) -> u32 {
     let result = async {
-        let (client, connection) =
-            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::warn!(error = ?e, "Postgres connection error");
-            }
-        });
+        let client = pool.get().await.context("pool connection")?;
 
         let row = client
             .query_opt("SELECT config FROM agents WHERE id = $1", &[&agent_id])
@@ -821,6 +978,148 @@ async fn fetch_max_concurrent_sessions(database_url: &str, agent_id: &str) -> u3
     }
 }
 
+/// Ensure a `users` + `user_identities` row exists for this platform user.
+/// If the identity already exists, returns the existing role.
+/// Otherwise creates a new user with role "user" and links the identity.
+/// Returns the user's role on success.
+async fn ensure_user_identity(
+    pool: &Pool,
+    platform: &str,
+    platform_user_id: &str,
+    username: &str,
+    display_name: &str,
+) -> Result<String> {
+    let client = pool.get().await.context("pool connection")?;
+
+    // Check if identity already exists
+    let existing = client
+        .query_opt(
+            "SELECT u.role FROM users u
+             JOIN user_identities ui ON ui.user_id = u.id
+             WHERE ui.platform = $1 AND ui.platform_user_id = $2",
+            &[&platform, &platform_user_id],
+        )
+        .await?;
+
+    if let Some(row) = existing {
+        return Ok(row.get::<_, String>("role"));
+    }
+
+    // Check if a user with this username already exists — if so, link
+    // the identity to them rather than creating a duplicate account.
+    // This handles the common case where the admin pre-created the user.
+    let existing_user = client
+        .query_opt(
+            "SELECT id, role FROM users WHERE username = $1 AND active = true",
+            &[&username],
+        )
+        .await?;
+
+    let (final_user_id, role) = if let Some(row) = existing_user {
+        (row.get::<_, String>("id"), row.get::<_, String>("role"))
+    } else {
+        // Create a new user with "user" role.
+        let new_id = Uuid::new_v4().to_string();
+        client
+            .execute(
+                "INSERT INTO users (id, username, display_name, role)
+                 VALUES ($1, $2, $3, 'user')",
+                &[&new_id, &username, &display_name],
+            )
+            .await
+            .context("failed to insert new user")?;
+        (new_id, "user".to_string())
+    };
+
+    // Link identity
+    client
+        .execute(
+            "INSERT INTO user_identities (id, user_id, platform, platform_user_id, platform_username)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (platform, platform_user_id) DO NOTHING",
+            &[
+                &Uuid::new_v4().to_string(),
+                &final_user_id,
+                &platform,
+                &platform_user_id,
+                &username,
+            ],
+        )
+        .await
+        .context("failed to insert user identity")?;
+
+    info!(
+        user_id = %final_user_id,
+        username = %username,
+        platform,
+        platform_user_id,
+        "Auto-created user and identity on pairing"
+    );
+
+    Ok(role)
+}
+
+/// Check if a user has an existing identity in the database (e.g. admin-created).
+async fn check_known_identity(pool: &Pool, platform: &str, platform_user_id: &str) -> bool {
+    let result = async {
+        let client = pool.get().await.context("pool connection")?;
+
+        let row = client
+            .query_opt(
+                "SELECT 1 FROM user_identities WHERE platform = $1 AND platform_user_id = $2",
+                &[&platform, &platform_user_id],
+            )
+            .await?;
+
+        Ok::<bool, anyhow::Error>(row.is_some())
+    }
+    .await;
+
+    match result {
+        Ok(found) => found,
+        Err(err) => {
+            warn!(error = ?err, "Failed to check user identity in database");
+            false
+        }
+    }
+}
+
+/// Create an active pairing for a user that already has a known identity,
+/// so they bypass the pairing code flow on subsequent messages.
+async fn auto_create_pairing(
+    pairing_store: &PairingStore,
+    platform: ChatPlatform,
+    user_id: &str,
+    channel_id: &str,
+    agent_id: &str,
+    ttl_secs: u64,
+) -> Result<()> {
+    use redis::AsyncCommands;
+
+    let now = chrono::Utc::now();
+    let pairing = crate::pairing_store::Pairing {
+        code: String::new(),
+        agent_id: agent_id.to_string(),
+        platform,
+        user_id: user_id.to_string(),
+        channel_id: channel_id.to_string(),
+        created_at: now,
+        expires_at: now + chrono::Duration::seconds(ttl_secs as i64),
+        metadata: serde_json::Value::Null,
+    };
+
+    // Write to Redis
+    let platform_str = format!("{platform:?}").to_lowercase();
+    let key = format!("chatbridge:pairing:active:{platform_str}:{user_id}");
+    let payload = serde_json::to_string(&pairing)?;
+    let mut conn = pairing_store.redis_conn();
+    conn.set_ex::<_, _, ()>(&key, &payload, ttl_secs)
+        .await
+        .context("failed to store auto-pairing in redis")?;
+
+    Ok(())
+}
+
 struct SessionContext {
     session_id: Uuid,
     steering_subject: String,
@@ -832,14 +1131,24 @@ async fn start_new_session(
     state: &AppState,
     envelope: &BridgeMessageEnvelope,
 ) -> Result<SessionContext> {
-    let thread_history = fetch_thread_history(
-        &state.database_url,
+    let mut thread_history = fetch_thread_history(
+        &state.pg_pool,
         &envelope.platform,
         &envelope.channel_id,
         &envelope.thread_root,
         state.config.thread_history_limit,
     )
     .await;
+
+    // Fall back to gateway-provided history (e.g. Discord API messages)
+    // when the database has no prior session history for this thread.
+    if thread_history.is_empty() && !envelope.thread_history.is_empty() {
+        thread_history = envelope.thread_history.clone();
+        info!(
+            count = thread_history.len(),
+            "Using gateway-provided thread history (no DB history available)"
+        );
+    }
 
     let attachments: Vec<Value> = envelope
         .attachments
@@ -1048,7 +1357,7 @@ async fn session_watcher_task(state: Arc<AppState>, record: ThreadRecord) -> Res
 }
 
 async fn fetch_thread_history(
-    database_url: &str,
+    pool: &Pool,
     source: &str,
     channel_id: &str,
     thread_id: &str,
@@ -1059,13 +1368,7 @@ async fn fetch_thread_history(
     }
 
     let result = async {
-        let (client, connection) =
-            tokio_postgres::connect(database_url, tokio_postgres::NoTls).await?;
-        tokio::spawn(async move {
-            if let Err(e) = connection.await {
-                tracing::warn!(error = ?e, "Postgres connection error");
-            }
-        });
+        let client = pool.get().await.context("pool connection")?;
 
         let mut history =
             query_thread_history(&client, source, channel_id, Some(thread_id), limit).await?;
@@ -1328,6 +1631,57 @@ async fn send_reply(state: &AppState, envelope: &BridgeMessageEnvelope, text: &s
     Ok(())
 }
 
+/// Strip leaked LLM internal markup (thinking tags, tool-call XML) that some
+/// models emit as plain text. Defense-in-depth — pi-bridge also strips these.
+fn strip_llm_markup(text: &str) -> String {
+    let mut s = text.to_string();
+    for (open, close) in [
+        ("<think>", "</think>"),
+        ("<tool_call>", "</tool_call>"),
+        ("<tool_result>", "</tool_result>"),
+    ] {
+        // Remove matched pairs (greedy — handles nested or multi-line)
+        while let Some(start) = s.find(open) {
+            if let Some(end) = s[start..].find(close) {
+                s.replace_range(start..start + end + close.len(), "");
+            } else {
+                // Orphan opening tag — remove from tag to end of line
+                let end = s[start..].find('\n').map(|i| start + i).unwrap_or(s.len());
+                s.replace_range(start..end, "");
+            }
+        }
+        // Remove any orphan closing tags
+        while let Some(pos) = s.find(close) {
+            s.replace_range(pos..pos + close.len(), "");
+        }
+    }
+    // Collapse runs of blank lines
+    while s.contains("\n\n\n") {
+        s = s.replace("\n\n\n", "\n\n");
+    }
+    s.trim().to_string()
+}
+
+fn typing_key(channel_id: &str, thread_root: &str) -> String {
+    format!("{channel_id}:{thread_root}")
+}
+
+async fn typing_loop(state: Arc<AppState>, channel_id: String, mut stop: watch::Receiver<bool>) {
+    loop {
+        if let Err(err) = state
+            .chat_bridge
+            .trigger_typing(&state.adapter_id, &channel_id)
+            .await
+        {
+            debug!(error = ?err, "Failed to trigger typing indicator");
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(Duration::from_secs(8)) => {}
+            _ = stop.changed() => break,
+        }
+    }
+}
+
 async fn handle_session_log(
     state: &AppState,
     record: &ThreadRecord,
@@ -1341,7 +1695,17 @@ async fn handle_session_log(
         thread_id: Some(record.thread_root.clone()),
     };
 
-    let mut content = MessageContent::markdown(message);
+    let cleaned = strip_llm_markup(message);
+    if cleaned.is_empty() && attachments.is_empty() {
+        return Ok(());
+    }
+
+    // Cancel typing indicator now that we have a response to deliver
+    let key = typing_key(&record.channel_id, &record.thread_root);
+    if let Some(tx) = state.typing_stops.lock().await.remove(&key) {
+        let _ = tx.send(true);
+    }
+    let mut content = MessageContent::markdown(&cleaned);
     content.attachments = attachments.to_vec();
     let mut outgoing = OutgoingMessage::new(channel, content);
     outgoing.reply_in_thread = Some(record.thread_root.clone());

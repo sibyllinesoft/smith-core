@@ -459,6 +459,19 @@ _is_protected_path {
 }$$,
 NULL);
 
+-- ── Chat pairing persistence ────────────────────────────────────────
+-- Durable store for DM pairing records (Redis is a hot cache on top).
+-- Pairings survive Redis flushes, daemon restarts, and stack resets.
+
+CREATE TABLE chat_pairings (
+  platform         TEXT NOT NULL,
+  platform_user_id TEXT NOT NULL,
+  agent_id         TEXT NOT NULL,
+  channel_id       TEXT NOT NULL DEFAULT '',
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (platform, platform_user_id)
+);
+
 -- ── Seed data ────────────────────────────────────────────────────────
 
 INSERT INTO users (id, username, display_name, role)

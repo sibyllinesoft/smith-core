@@ -35,5 +35,8 @@ tmp/
 *.lcov
 cobertura.xml
 
+# User config (chat-bridge.toml, adapter configs, etc.)
+config/
+
 # Docker volumes
 data/

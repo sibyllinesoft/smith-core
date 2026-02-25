@@ -34,6 +34,10 @@ struct Cli {
     #[arg(long, default_value = "10", env = "MCP_SIDECAR_INIT_TIMEOUT")]
     init_timeout: u64,
 
+    /// Max seconds to wait for a tool call response (0 = no limit)
+    #[arg(long, default_value = "60", env = "MCP_SIDECAR_CALL_TIMEOUT")]
+    call_timeout: u64,
+
     /// Path to middleware TOML config (input/output transforms, filters)
     #[arg(long, env = "MCP_SIDECAR_MIDDLEWARE")]
     middleware: Option<PathBuf>,
@@ -61,6 +65,8 @@ pub struct AppState {
     pub middleware: RwLock<Option<Arc<MiddlewareConfig>>>,
     pub middleware_path: Option<PathBuf>,
     pub api_token: Option<String>,
+    /// Max duration for a single tool call (None = no limit).
+    pub call_timeout: Option<Duration>,
 }
 
 #[tokio::main]
@@ -115,12 +121,19 @@ async fn main() -> Result<()> {
         .await
         .context("failed to start MCP server")?;
 
+    let call_timeout = if cli.call_timeout > 0 {
+        Some(Duration::from_secs(cli.call_timeout))
+    } else {
+        None
+    };
+
     let state = Arc::new(AppState {
         client: RwLock::new(client),
         config: spawn_config,
         middleware: RwLock::new(mw),
         middleware_path: cli.middleware,
         api_token,
+        call_timeout,
     });
 
     // Build HTTP router

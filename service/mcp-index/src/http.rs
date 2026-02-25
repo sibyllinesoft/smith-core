@@ -137,34 +137,24 @@ async fn tools_search(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     require_api_token(&state, &headers)?;
 
-    let q = match &params.q {
-        Some(q) if !q.is_empty() => q.to_lowercase(),
-        _ => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "error": "missing required query parameter: q" })),
-            ));
-        }
-    };
+    let has_query = params.q.as_ref().is_some_and(|q| !q.trim().is_empty());
+    let has_server = params.server.as_ref().is_some_and(|s| !s.trim().is_empty());
 
-    let servers = state.servers.read().await;
-    let results: Vec<_> = servers
-        .iter()
-        .filter(|s| s.healthy)
-        .filter(|s| {
-            params
-                .server
-                .as_ref()
-                .map_or(true, |srv| s.name.eq_ignore_ascii_case(srv))
-        })
-        .flat_map(|s| s.tools.iter().cloned())
-        .filter(|t| {
-            t.name.to_lowercase().contains(&q)
-                || t.description
-                    .as_ref()
-                    .is_some_and(|d| d.to_lowercase().contains(&q))
-        })
-        .collect();
+    if !has_query && !has_server {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "provide at least one of: q, server" })),
+        ));
+    }
+
+    let search_index = state.search_index.read().await;
+
+    let results = if has_query {
+        let q = params.q.as_ref().unwrap();
+        search_index.search(q, params.server.as_deref(), 50)
+    } else {
+        search_index.list_server(params.server.as_ref().unwrap())
+    };
 
     Ok(Json(json!(results)))
 }
@@ -221,7 +211,7 @@ async fn tools_call(
     drop(servers);
 
     let resp = state
-        .client
+        .call_client
         .post(&upstream_url)
         .headers(upstream_auth_headers(state.upstream_api_token.as_deref()))
         .json(&req.arguments)

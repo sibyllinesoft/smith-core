@@ -5,9 +5,12 @@ Scope: single-user installation on a private network / VPN.
 ## Must Pass Before Tagging
 
 - [ ] `cargo check --workspace`
+- [ ] `cargo fmt --all -- --check`
+- [ ] `cargo clippy --workspace -- -D warnings`
 - [ ] `cargo check --manifest-path ${AGENTD_ROOT}/Cargo.toml --features grpc --bin agentd`
 - [ ] `npm run build --workspaces --if-present`
 - [ ] `npm run test --workspace installer`
+- [ ] `npm audit`
 - [ ] `docker compose config`
 - [ ] Envoy config validates (`envoy --mode validate -c /etc/envoy/envoy.yaml`)
 - [ ] `bash infra/envoy/certs/generate-certs.sh` succeeds

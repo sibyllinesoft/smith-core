@@ -1,6 +1,7 @@
 mod http;
 mod oauth;
 mod poller;
+mod search;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -117,10 +118,17 @@ async fn main() -> Result<()> {
         .build()
         .expect("failed to build HTTP client");
 
+    let call_client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .build()
+        .expect("failed to build tool-call HTTP client");
+
     let state = Arc::new(IndexState {
         servers: RwLock::new(Vec::new()),
+        search_index: RwLock::new(search::ToolIndex::empty()),
         upstreams,
         client,
+        call_client,
         oauth: oauth_state,
         base_url: cli.base_url.trim_end_matches('/').to_string(),
         api_token,

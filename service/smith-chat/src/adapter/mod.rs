@@ -92,4 +92,10 @@ pub trait ChatAdapter: Send + Sync {
     async fn health_check(&self) -> Result<AdapterStatus>;
     async fn fetch_messages(&self, request: FetchRequest) -> Result<Vec<BridgeMessage>>;
     async fn send_message(&self, message: OutgoingMessage) -> Result<SendReceipt>;
+
+    /// Trigger a typing indicator in the given channel. Platforms that don't
+    /// support typing indicators should leave the default no-op.
+    async fn trigger_typing(&self, _channel_id: &str) -> Result<()> {
+        Ok(())
+    }
 }

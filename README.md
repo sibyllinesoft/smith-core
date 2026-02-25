@@ -1,16 +1,20 @@
-# Smith Core
+# Smith
 
-**An AI agent platform where security isn't an afterthought.**
+**Your Secure Personal Assistant.**
 
-Smith Core gives you a personal AI assistant across 10 chat platforms, backed by sandboxed execution, policy-based admission control, and an mTLS gateway. The agent can discover and use tools through a unified [MCP](https://modelcontextprotocol.io/) catalog, and every action flows through NATS JetStream with full audit visibility.
+Are you interested in automating the tedium in your life, but unsure how to do it securely? If so, Smith is for you.
 
-Run it on your own hardware. Talk to it on the channels you already use. Know exactly what it can and can't do.
+Smith is a personal AI assistant that interacts with you across the chat platforms you already use, backed by sandboxed execution, policy-based admission control and an mTLS gateway. Everything the agent does is fully observable and auditable.
 
-## Why this exists
+## Why Smith
 
-Most open-source agent platforms give you a powerful assistant that runs tools directly on your host with no isolation. That's fine for demos. It's less fine when the agent is processing untrusted input from group chats, or when you want to let other people talk to it.
+With current agents, you're forced to choose between giving your agent capabilities and keeping yourself secure. The common refrain is that this is an unavoidable tradeoff. I beg to differ.
 
-Smith Core separates *thinking* from *doing*. The AI reasons about what to do; a separate sandboxed daemon (`agentd`) actually does it — inside Landlock + seccomp-bpf + cgroups on Linux, with OPA policies governing what's allowed. You get the full capability of an autonomous agent without handing it the keys to everything.
+With existing agents, all an attacker has to do to compromise one is get it to read a prompt injection on the public web, in an email or a support ticket. Exploits exist for all frontier models, and once the model has been injected, attackers can trick your agent into installing malware in your system or exfiltrating valuable data. This isn't something you can easily mitigate with a patch, your agent needs to be architected from the ground up with security in mind.
+
+Beyond that, existing agents are designed for tinkerers to run on throwaway systems. They're not architected to easily integrate into the control and monitoring systems that security conscious people are already using. That means more to build, configure and test. Even worse, vendors are using security configuration/management as a form of lock-in; if you're using agents from Anthropic and you want to switch to OpenAI, Anthropic will the switchover as painful as possible to dissuade you from jumping ship.
+
+I built Smith to solve these problems. Smith was designed from the ground up with an isolated zero trust architecture suitable for deployment in regulated industries. Smith integrates with commonly adopted observability (Open Telemetry) and policy (OPA) tools out of the box, and it's been written to be easily adapted to other common stacks.
 
 ## Install
 
@@ -173,12 +177,12 @@ The full stack ships with:
 |---------|---------|------|
 | NATS | Message bus (JetStream) | 4222 |
 | PostgreSQL | Primary database | 5432 |
-| Redis | Cache | — |
+| Redis | Cache | 6379 |
 | ClickHouse | Telemetry storage | — |
 | OTEL Collector | Trace/metrics pipeline | — |
 | Grafana | Dashboards | 3000 |
-| OPA | Policy engine | — |
-| Envoy | mTLS gateway | 6173 |
+| OPA | Policy engine | 8181 |
+| Envoy | mTLS gateway / egress proxy | 6173, 6174 |
 | Session Recorder | Chat session persistence | — |
 | Smith Cron | Scheduled tasks | — |
 | MCP Postgres | DB tools via MCP | — |
