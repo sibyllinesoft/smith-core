@@ -268,7 +268,6 @@ Smith Core is designed for single-user, self-hosted deployments. Defaults are se
 - **Token-enforced MCP APIs** — `mcp-index` and `mcp-sidecar` require API tokens by default (including `/health`; opt-out only via explicit `*_ALLOW_UNAUTHENTICATED=true`)
 - **Signed webhook enforcement** — `smith-chat` webhook ingress rejects unsigned requests by default (`CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS=true`)
 - **Config-backed agentd startup** — `just run-agentd` uses committed config; insecure fallback is now dev-only via `just run-agentd-dev`
-- **No default policy bundles for multi-user** — that's a [paid offering](https://smithcore.dev)
 
 ## License
 
