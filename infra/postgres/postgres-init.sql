@@ -151,8 +151,9 @@ CREATE INDEX idx_relationships_created_by ON relationships(created_by);
 -- smith (superuser) remains for migrations and identity resolution.
 -- smith_app: read/write with RLS enforced (used by pi-bridge, session-recorder).
 -- smith_readonly: read-only with RLS enforced (used by MCP postgres, Grafana).
+-- smith_gatekeeper: binds verified end-user identity to backend sessions.
 
-CREATE USER smith_app WITH PASSWORD 'smith-app-dev';
+CREATE USER smith_app;
 GRANT CONNECT ON DATABASE smith TO smith_app;
 GRANT USAGE ON SCHEMA public TO smith_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO smith_app;
@@ -160,11 +161,15 @@ GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO smith_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO smith_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO smith_app;
 
-CREATE USER smith_readonly WITH PASSWORD 'smith-readonly-dev';
+CREATE USER smith_readonly;
 GRANT CONNECT ON DATABASE smith TO smith_readonly;
 GRANT USAGE ON SCHEMA public TO smith_readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO smith_readonly;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO smith_readonly;
+
+CREATE USER smith_gatekeeper;
+GRANT CONNECT ON DATABASE smith TO smith_gatekeeper;
+GRANT USAGE ON SCHEMA public TO smith_gatekeeper;
 
 -- ── Users & identity tables ──────────────────────────────────────────
 
@@ -207,15 +212,136 @@ CREATE INDEX idx_token_usage_user ON chat_token_usage(user_id);
 CREATE INDEX idx_notes_user ON notes(user_id);
 CREATE INDEX idx_relationships_user ON relationships(user_id);
 
+-- ── Hardened session binding for RLS ─────────────────────────────────
+
+CREATE TABLE rls_session_bindings (
+  backend_pid   INTEGER NOT NULL,
+  backend_start TIMESTAMPTZ NOT NULL,
+  user_id       TEXT,
+  user_role     TEXT NOT NULL CHECK (user_role IN ('admin', 'user', 'guest')),
+  issued_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (backend_pid, backend_start)
+);
+
+REVOKE ALL ON rls_session_bindings FROM PUBLIC;
+REVOKE ALL ON rls_session_bindings FROM smith_app;
+REVOKE ALL ON rls_session_bindings FROM smith_readonly;
+GRANT SELECT, INSERT, UPDATE, DELETE ON rls_session_bindings TO smith_gatekeeper;
+
+CREATE OR REPLACE FUNCTION current_backend_binding_key()
+RETURNS TABLE (backend_pid INTEGER, backend_start TEXT)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog
+AS $$
+  SELECT a.pid, a.backend_start::text
+  FROM pg_catalog.pg_stat_activity AS a
+  WHERE a.pid = pg_catalog.pg_backend_pid();
+$$;
+
+REVOKE ALL ON FUNCTION current_backend_binding_key() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION current_backend_binding_key() TO smith_app, smith_readonly;
+
+CREATE OR REPLACE FUNCTION bind_rls_session(
+  p_backend_pid INTEGER,
+  p_backend_start TEXT,
+  p_user_id TEXT,
+  p_user_role TEXT,
+  p_ttl_seconds INTEGER DEFAULT 300
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+BEGIN
+  DELETE FROM public.rls_session_bindings
+  WHERE expires_at <= NOW();
+
+  INSERT INTO public.rls_session_bindings (
+    backend_pid,
+    backend_start,
+    user_id,
+    user_role,
+    issued_at,
+    expires_at
+  )
+  VALUES (
+    p_backend_pid,
+    p_backend_start::timestamptz,
+    p_user_id,
+    p_user_role,
+    NOW(),
+    NOW() + make_interval(secs => GREATEST(p_ttl_seconds, 1))
+  )
+  ON CONFLICT (backend_pid, backend_start)
+  DO UPDATE SET
+    user_id = EXCLUDED.user_id,
+    user_role = EXCLUDED.user_role,
+    issued_at = NOW(),
+    expires_at = EXCLUDED.expires_at;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION unbind_rls_session(
+  p_backend_pid INTEGER,
+  p_backend_start TEXT
+)
+RETURNS VOID
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = public, pg_catalog
+AS $$
+  DELETE FROM public.rls_session_bindings
+  WHERE backend_pid = p_backend_pid
+    AND backend_start = p_backend_start::timestamptz;
+$$;
+
+REVOKE ALL ON FUNCTION bind_rls_session(INTEGER, TEXT, TEXT, TEXT, INTEGER) FROM PUBLIC;
+REVOKE ALL ON FUNCTION unbind_rls_session(INTEGER, TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION bind_rls_session(INTEGER, TEXT, TEXT, TEXT, INTEGER) TO smith_gatekeeper;
+GRANT EXECUTE ON FUNCTION unbind_rls_session(INTEGER, TEXT) TO smith_gatekeeper;
+
 -- ── Session variable helpers ─────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION current_user_id() RETURNS TEXT AS $$
-  SELECT COALESCE(current_setting('app.current_user_id', true), '');
-$$ LANGUAGE sql STABLE;
+  SELECT COALESCE(
+    (
+      SELECT b.user_id
+      FROM public.rls_session_bindings AS b
+      JOIN pg_catalog.pg_stat_activity AS a
+        ON a.pid = pg_catalog.pg_backend_pid()
+       AND b.backend_pid = a.pid
+       AND b.backend_start = a.backend_start
+      WHERE b.expires_at > NOW()
+      LIMIT 1
+    ),
+    ''
+  );
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_catalog;
 
 CREATE OR REPLACE FUNCTION current_user_role() RETURNS TEXT AS $$
-  SELECT COALESCE(current_setting('app.current_user_role', true), 'guest');
-$$ LANGUAGE sql STABLE;
+  SELECT COALESCE(
+    (
+      SELECT b.user_role
+      FROM public.rls_session_bindings AS b
+      JOIN pg_catalog.pg_stat_activity AS a
+        ON a.pid = pg_catalog.pg_backend_pid()
+       AND b.backend_pid = a.pid
+       AND b.backend_start = a.backend_start
+      WHERE b.expires_at > NOW()
+      LIMIT 1
+    ),
+    'guest'
+  );
+$$ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_catalog;
+
+REVOKE ALL ON FUNCTION current_user_id() FROM PUBLIC;
+REVOKE ALL ON FUNCTION current_user_role() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION current_user_id() TO smith_app, smith_readonly;
+GRANT EXECUTE ON FUNCTION current_user_role() TO smith_app, smith_readonly;
 
 -- ── Row-Level Security policies ──────────────────────────────────────
 -- Superuser (smith) bypasses RLS automatically.
@@ -542,7 +668,16 @@ ALTER TABLE cron_jobs ENABLE ROW LEVEL SECURITY;
 CREATE POLICY cron_jobs_user ON cron_jobs
   FOR SELECT TO smith_app, smith_readonly
   USING (user_id = current_user_id() OR current_user_role() = 'admin');
-CREATE POLICY cron_jobs_admin_write ON cron_jobs
-  FOR ALL TO smith_app
-  USING (current_user_role() = 'admin')
-  WITH CHECK (current_user_role() = 'admin');
+CREATE POLICY cron_jobs_insert_self ON cron_jobs
+  FOR INSERT TO smith_app
+  WITH CHECK (current_user_id() <> '' AND user_id = current_user_id());
+CREATE POLICY cron_jobs_update_owner_or_admin ON cron_jobs
+  FOR UPDATE TO smith_app
+  USING (user_id = current_user_id() OR current_user_role() = 'admin')
+  WITH CHECK (
+    (current_user_id() <> '' AND user_id = current_user_id())
+    OR current_user_role() = 'admin'
+  );
+CREATE POLICY cron_jobs_delete_owner_or_admin ON cron_jobs
+  FOR DELETE TO smith_app
+  USING (user_id = current_user_id() OR current_user_role() = 'admin');

@@ -1,0 +1,7 @@
+{
+  "name": "smith-mcp-postgres",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only Postgres MCP HTTP shim backed by psql and the pg-auth-gateway",
+  "license": "MIT"
+}

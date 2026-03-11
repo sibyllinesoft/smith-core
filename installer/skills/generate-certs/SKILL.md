@@ -33,6 +33,8 @@ The script reports generated artifacts and lists files in:
 - `infra/envoy/certs/generated/server.key`
 - `infra/envoy/certs/generated/client.crt`
 - `infra/envoy/certs/generated/client.key`
+- `infra/envoy/certs/generated/client.p12`
+- `infra/envoy/certs/generated/client.p12.password`
 
 ## Reading Results
 

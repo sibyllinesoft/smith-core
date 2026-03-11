@@ -7,11 +7,26 @@ import { Cron } from "croner";
 
 const DATABASE_URL =
   process.env.DATABASE_URL ||
-  "postgresql://smith_app:smith-app-dev@postgres:5432/smith?options=-c%20app.current_user_role%3Dadmin";
+  "postgresql://smith_app:__set_via_env__@postgres:5432/smith";
+const GATEKEEPER_DATABASE_URL =
+  process.env.GATEKEEPER_DATABASE_URL ||
+  "postgresql://smith_gatekeeper:__set_via_env__@postgres:5432/smith";
+const RLS_BIND_TTL_SECS = Math.max(
+  1,
+  Math.floor(Number(process.env.RLS_BIND_TTL_SECS || "300")) || 300
+);
 const NATS_URL = process.env.NATS_URL || "nats://nats:4222";
 
 const pool = new pg.Pool({ connectionString: DATABASE_URL });
+const gatekeeperPool = new pg.Pool({ connectionString: GATEKEEPER_DATABASE_URL });
 const log = (...args) => console.error("[mcp-cron]", ...args);
+const SmithIdentitySchema = z.object({
+  user_id: z.string().optional(),
+  role: z.enum(["admin", "user", "guest"]),
+  channel: z.string().optional(),
+  principal: z.string().optional(),
+  session: z.string().optional(),
+}).optional();
 
 let nc;
 let sc;
@@ -45,6 +60,59 @@ function computeNextRun(schedule) {
   }
 }
 
+function requireSmithIdentity(identity) {
+  if (!identity || !identity.role || !identity.user_id) {
+    throw new Error("missing verified Smith identity");
+  }
+
+  return {
+    userId: identity.user_id,
+    role: identity.role,
+  };
+}
+
+async function queryAsIdentity(identity, sql, params = []) {
+  const { userId, role } = requireSmithIdentity(identity);
+  const client = await pool.connect();
+  const gatekeeper = await gatekeeperPool.connect();
+  let backendPid = null;
+  let backendStart = null;
+  try {
+    await client.query("BEGIN");
+    const binding = await client.query(
+      "SELECT backend_pid, backend_start FROM public.current_backend_binding_key()"
+    );
+    backendPid = binding.rows[0]?.backend_pid ?? null;
+    backendStart = binding.rows[0]?.backend_start ?? null;
+    if (!backendPid || !backendStart) {
+      throw new Error("failed to determine postgres backend binding key");
+    }
+    await gatekeeper.query(
+      "SELECT public.bind_rls_session($1, $2, $3, $4, $5)",
+      [backendPid, backendStart, userId, role, RLS_BIND_TTL_SECS]
+    );
+    const result = await client.query(sql, params);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK");
+    throw err;
+  } finally {
+    if (backendPid && backendStart) {
+      try {
+        await gatekeeper.query(
+          "SELECT public.unbind_rls_session($1, $2)",
+          [backendPid, backendStart]
+        );
+      } catch (unbindErr) {
+        log("failed to unbind RLS session:", unbindErr);
+      }
+    }
+    gatekeeper.release();
+    client.release();
+  }
+}
+
 const server = new McpServer({
   name: "cron",
   version: "1.0.0",
@@ -62,8 +130,9 @@ server.tool(
     agent_id: z.string().optional().describe("Agent ID (default: 'default')"),
     metadata: z.record(z.any()).optional().describe("Extra metadata JSON"),
     enabled: z.boolean().optional().describe("Whether the job is enabled (default: true)"),
+    _smith_identity: SmithIdentitySchema,
   },
-  async ({ name, schedule, goal, agent_id, metadata, enabled }) => {
+  async ({ name, schedule, goal, agent_id, metadata, enabled, _smith_identity }) => {
     // Validate cron expression
     try {
       new Cron(schedule);
@@ -75,9 +144,10 @@ server.tool(
     }
 
     const nextRun = computeNextRun(schedule);
-    const res = await pool.query(
-      `INSERT INTO cron_jobs (name, schedule, goal, agent_id, metadata, enabled, next_run_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+    const res = await queryAsIdentity(
+      _smith_identity,
+      `INSERT INTO cron_jobs (name, schedule, goal, agent_id, metadata, enabled, next_run_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
       [
         name,
@@ -87,6 +157,7 @@ server.tool(
         JSON.stringify(metadata || {}),
         enabled !== undefined ? enabled : true,
         nextRun,
+        requireSmithIdentity(_smith_identity).userId,
       ]
     );
     await notifyReload();
@@ -101,9 +172,10 @@ server.tool(
   "Get a cron job by id",
   {
     id: z.string().describe("Cron job ID"),
+    _smith_identity: SmithIdentitySchema,
   },
-  async ({ id }) => {
-    const res = await pool.query("SELECT * FROM cron_jobs WHERE id = $1", [id]);
+  async ({ id, _smith_identity }) => {
+    const res = await queryAsIdentity(_smith_identity, "SELECT * FROM cron_jobs WHERE id = $1", [id]);
     if (res.rows.length === 0) {
       return { content: [{ type: "text", text: "Cron job not found" }], isError: true };
     }
@@ -119,8 +191,9 @@ server.tool(
   {
     enabled: z.boolean().optional().describe("Filter by enabled status"),
     agent_id: z.string().optional().describe("Filter by agent_id"),
+    _smith_identity: SmithIdentitySchema,
   },
-  async ({ enabled, agent_id }) => {
+  async ({ enabled, agent_id, _smith_identity }) => {
     const conditions = [];
     const params = [];
     if (enabled !== undefined) {
@@ -132,7 +205,8 @@ server.tool(
       conditions.push(`agent_id = $${params.length}`);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const res = await pool.query(
+    const res = await queryAsIdentity(
+      _smith_identity,
       `SELECT * FROM cron_jobs ${where} ORDER BY created_at`,
       params
     );
@@ -153,8 +227,9 @@ server.tool(
     agent_id: z.string().optional().describe("New agent ID"),
     metadata: z.record(z.any()).optional().describe("New metadata (merged)"),
     enabled: z.boolean().optional().describe("Enable or disable"),
+    _smith_identity: SmithIdentitySchema,
   },
-  async ({ id, name, schedule, goal, agent_id, metadata, enabled }) => {
+  async ({ id, name, schedule, goal, agent_id, metadata, enabled, _smith_identity }) => {
     // Validate new schedule if provided
     if (schedule !== undefined) {
       try {
@@ -205,7 +280,7 @@ server.tool(
     sets.push("modified_at = NOW()");
     params.push(id);
     const query = `UPDATE cron_jobs SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING *`;
-    const res = await pool.query(query, params);
+    const res = await queryAsIdentity(_smith_identity, query, params);
     if (res.rows.length === 0) {
       return { content: [{ type: "text", text: "Cron job not found" }], isError: true };
     }
@@ -221,9 +296,10 @@ server.tool(
   "Delete a cron job by id",
   {
     id: z.string().describe("Cron job ID"),
+    _smith_identity: SmithIdentitySchema,
   },
-  async ({ id }) => {
-    const res = await pool.query("DELETE FROM cron_jobs WHERE id = $1 RETURNING *", [id]);
+  async ({ id, _smith_identity }) => {
+    const res = await queryAsIdentity(_smith_identity, "DELETE FROM cron_jobs WHERE id = $1 RETURNING *", [id]);
     if (res.rows.length === 0) {
       return { content: [{ type: "text", text: "Cron job not found" }], isError: true };
     }

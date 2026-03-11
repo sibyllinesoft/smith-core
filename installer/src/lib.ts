@@ -4,6 +4,7 @@ import { homedir } from "os";
 
 import type { KnownProvider } from "@mariozechner/pi-ai";
 import type { ThinkingLevel } from "@mariozechner/pi-agent-core";
+import type { InstallerHarness } from "./harness.js";
 
 export type { KnownProvider, ThinkingLevel };
 
@@ -15,6 +16,7 @@ export interface CliArgs {
   step?: string;
   force: boolean;
   help: boolean;
+  harness?: InstallerHarness;
   /** GitHub owner/repo (default: sibyllinesoft/smith-core) */
   repo?: string;
   /** Release tag to install (default: latest) */
@@ -85,6 +87,14 @@ export function parseArgs(argv: string[]): CliArgs {
       case "--force":
         args.force = true;
         break;
+      case "--harness": {
+        const harness = argv[++i] as InstallerHarness | undefined;
+        if (!harness) {
+          throw new Error("Missing value for --harness");
+        }
+        args.harness = harness;
+        break;
+      }
       case "--repo":
         args.repo = argv[++i]!;
         break;
@@ -274,6 +284,15 @@ function isLikelyLoopbackListen(value: string): boolean {
   );
 }
 
+function hasUrlCredentials(value: string): boolean {
+  try {
+    const url = new URL(value.trim());
+    return url.username.length > 0 || url.password.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function evaluateInstallerSecurity(smithRoot: string): InstallerSecurityReport {
   const envPath = join(smithRoot, ".env");
   const envExamplePath = join(smithRoot, ".env.example");
@@ -306,6 +325,21 @@ export function evaluateInstallerSecurity(smithRoot: string): InstallerSecurityR
       "POSTGRES_PASSWORD",
       ["smith-dev", "postgres", "password", "changeme"],
       "Set POSTGRES_PASSWORD to a unique, high-entropy value.",
+    ],
+    [
+      "SMITH_APP_PASSWORD",
+      ["smith-app-dev", "smith_app", "password", "changeme"],
+      "Set SMITH_APP_PASSWORD to a unique, high-entropy value.",
+    ],
+    [
+      "SMITH_READONLY_PASSWORD",
+      ["smith-readonly-dev", "smith_readonly", "password", "changeme"],
+      "Set SMITH_READONLY_PASSWORD to a unique, high-entropy value.",
+    ],
+    [
+      "SMITH_GATEKEEPER_PASSWORD",
+      ["smith-gatekeeper-dev", "smith_gatekeeper", "password", "changeme"],
+      "Set SMITH_GATEKEEPER_PASSWORD to a unique, high-entropy value.",
     ],
     [
       "CLICKHOUSE_PASSWORD",
@@ -402,6 +436,44 @@ export function evaluateInstallerSecurity(smithRoot: string): InstallerSecurityR
     });
   }
 
+  const natsUrl = (vars.SMITH_NATS_URL ?? vars.NATS_URL ?? "").trim();
+  if (!natsUrl) {
+    warnings.push({
+      id: "missing-nats-url",
+      message:
+        "SMITH_NATS_URL is not configured; local or customer-managed NATS connectivity is undefined.",
+      recommendation:
+        "Set SMITH_NATS_URL and SMITH_NATS_DOCKER_URL, or run 'smith install' to generate authenticated local NATS URLs.",
+    });
+  } else if (!hasUrlCredentials(natsUrl)) {
+    warnings.push({
+      id: "unauthenticated-nats-url",
+      message:
+        "SMITH_NATS_URL has no embedded credentials; the internal control plane may accept unauthenticated NATS clients.",
+      recommendation:
+        "Use dedicated NATS credentials or creds files, and apply subject ACLs for Smith services when using customer-managed NATS.",
+    });
+  }
+
+  const dockerNatsUrl = (vars.SMITH_NATS_DOCKER_URL ?? "").trim();
+  if (!dockerNatsUrl) {
+    warnings.push({
+      id: "missing-docker-nats-url",
+      message:
+        "SMITH_NATS_DOCKER_URL is not configured; compose services have no defined authenticated NATS endpoint.",
+      recommendation:
+        "Set SMITH_NATS_DOCKER_URL to the container-reachable NATS URL, or run 'smith install' to generate a local authenticated value.",
+    });
+  } else if (!hasUrlCredentials(dockerNatsUrl)) {
+    warnings.push({
+      id: "unauthenticated-docker-nats-url",
+      message:
+        "SMITH_NATS_DOCKER_URL has no embedded credentials; compose services would talk to NATS without client authentication.",
+      recommendation:
+        "Set SMITH_NATS_DOCKER_URL to an authenticated URL reachable from containers, or let the installer generate a local one.",
+    });
+  }
+
   const capabilityDigest = (vars.AGENTD_CAPABILITY_DIGEST ?? "").trim();
   if (!/^[a-fA-F0-9]{64}$/.test(capabilityDigest)) {
     warnings.push({
@@ -457,6 +529,40 @@ export function evaluateInstallerSecurity(smithRoot: string): InstallerSecurityR
       recommendation:
         "Keep AGENTD_GRPC_LISTEN on loopback or enforce network controls before exposing it beyond trusted private networks.",
     });
+  }
+
+  const egressPolicyPath = join(
+    smithRoot,
+    "infra",
+    "opa",
+    "policy",
+    "smith",
+    "egress",
+    "data.json"
+  );
+  if (existsSync(egressPolicyPath)) {
+    try {
+      const egress = JSON.parse(readFileSync(egressPolicyPath, "utf8")) as {
+        default?: string;
+      };
+      if ((egress.default ?? "").trim().toLowerCase() === "allow") {
+        warnings.push({
+          id: "egress-default-allow",
+          message:
+            "Envoy/OPA egress policy defaults to allow; agents can reach arbitrary outbound destinations unless you narrow it.",
+          recommendation:
+            "Restrict infra/opa/policy/smith/egress/data.json to a deny-by-default or tightly-scoped allowlist before production use.",
+        });
+      }
+    } catch {
+      warnings.push({
+        id: "egress-policy-unreadable",
+        message:
+          "The egress policy file could not be parsed, so outbound restrictions could not be verified.",
+        recommendation:
+          "Review infra/opa/policy/smith/egress/data.json and ensure it reflects your intended outbound allowlist.",
+      });
+    }
   }
 
   return { sourceFile, warnings };

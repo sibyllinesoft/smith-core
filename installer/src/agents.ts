@@ -33,7 +33,7 @@ export async function createInstallerSession(opts: InstallerOptions) {
     agentsFilesOverride: (current) => ({
       agentsFiles: [
         ...current.agentsFiles,
-        { path: "/smith-installer/AGENTS.md", content: agentsMd },
+        { path: "/smith/AGENTS.md", content: agentsMd },
       ],
     }),
   });

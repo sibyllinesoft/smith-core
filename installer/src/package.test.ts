@@ -10,12 +10,13 @@ describe("package.json manifest", () => {
   const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
 
   it("has correct package name", () => {
-    expect(pkg.name).toBe("@sibyllinesoft/smith-installer");
+    expect(pkg.name).toBe("@sibyllinesoft/smith");
   });
 
   it("has bin entry", () => {
     expect(pkg.bin).toBeDefined();
-    expect(pkg.bin["smith-install"]).toBe("./dist/cli.js");
+    expect(pkg.bin["smith"]).toBe("./dist/smith.js");
+    expect(pkg.bin["smith-install"]).toBeUndefined();
   });
 
   it("has main entry", () => {

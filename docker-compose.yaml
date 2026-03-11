@@ -10,7 +10,13 @@ services:
     image: nats:2.10-alpine
     container_name: smith-nats
     hostname: nats
-    command: ['--config', '/etc/nats/nats.conf']
+    command:
+      - '--config'
+      - '/etc/nats/nats.conf'
+      - '--user'
+      - '${SMITH_NATS_USERNAME:?Set SMITH_NATS_USERNAME in .env}'
+      - '--pass'
+      - '${SMITH_NATS_PASSWORD:?Set SMITH_NATS_PASSWORD in .env}'
     ports:
       - "127.0.0.1:4222:4222"
     expose:
@@ -47,10 +53,13 @@ services:
     environment:
       - POSTGRES_DB=smith
       - POSTGRES_USER=smith
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-smith-dev}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      - SMITH_APP_PASSWORD=${SMITH_APP_PASSWORD:?Set SMITH_APP_PASSWORD in .env}
+      - SMITH_READONLY_PASSWORD=${SMITH_READONLY_PASSWORD:?Set SMITH_READONLY_PASSWORD in .env}
+      - SMITH_GATEKEEPER_PASSWORD=${SMITH_GATEKEEPER_PASSWORD:?Set SMITH_GATEKEEPER_PASSWORD in .env}
     volumes:
       - ${SMITH_POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql/data
-      - ./infra/postgres/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./infra/postgres:/docker-entrypoint-initdb.d:ro
     networks:
       - smith
     restart: unless-stopped
@@ -59,6 +68,24 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  pg-auth-gateway:
+    image: ghcr.io/sibyllinesoft/pg-auth-gateway:${SMITH_VERSION:-latest}
+    container_name: smith-pg-auth-gateway
+    hostname: pg-auth-gateway
+    expose:
+      - "5432"
+    environment:
+      - PG_AUTH_GATEWAY_READONLY_URL=postgresql://smith_readonly:${SMITH_READONLY_PASSWORD:?Set SMITH_READONLY_PASSWORD in .env}@postgres:5432/smith
+      - PG_AUTH_GATEWAY_GATEKEEPER_URL=postgresql://smith_gatekeeper:${SMITH_GATEKEEPER_PASSWORD:?Set SMITH_GATEKEEPER_PASSWORD in .env}@postgres:5432/smith
+      - PG_AUTH_GATEWAY_IDENTITY_SECRET=${PG_AUTH_GATEWAY_IDENTITY_SECRET:?Set PG_AUTH_GATEWAY_IDENTITY_SECRET in .env}
+      - PG_AUTH_GATEWAY_BIND_TTL_SECS=${PG_AUTH_GATEWAY_BIND_TTL_SECS:-300}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - smith
+    restart: unless-stopped
 
   # ── Cache ───────────────────────────────────────────────────────────────
   redis:
@@ -89,12 +116,16 @@ services:
     environment:
       - CLICKHOUSE_DB=otel
       - CLICKHOUSE_USER=default
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-observability-dev}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
+    deploy:
+      resources:
+        limits:
+          memory: 16G
     volumes:
       - ${SMITH_CLICKHOUSE_DATA_DIR:-./data/clickhouse}:/var/lib/clickhouse
     networks:
@@ -124,7 +155,7 @@ services:
       - CLICKHOUSE_ENDPOINT=http://clickhouse:8123
       - CLICKHOUSE_DATABASE=otel
       - CLICKHOUSE_USERNAME=default
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-observability-dev}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:?Set CLICKHOUSE_PASSWORD in .env}
       - OTEL_BATCH_SIZE=512
       - OTEL_BATCH_TIMEOUT=1s
       - OTEL_MEMORY_LIMIT_MIB=512
@@ -148,8 +179,9 @@ services:
       - "127.0.0.1:3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
       - GF_INSTALL_PLUGINS=grafana-clickhouse-datasource
+      - SMITH_READONLY_PASSWORD=${SMITH_READONLY_PASSWORD:?Set SMITH_READONLY_PASSWORD in .env}
     volumes:
       - ${SMITH_GRAFANA_DATA_DIR:-./data/grafana}:/var/lib/grafana
       - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -202,6 +234,7 @@ services:
     ports:
       - "127.0.0.1:6173:10443"
       - "127.0.0.1:6174:10070"   # egress forward proxy
+      - "127.0.0.1:6175:15432"   # postgres auth gateway
       - "127.0.0.1:9901:9901"
     volumes:
       - ./infra/envoy/envoy.yaml:/etc/envoy/envoy.yaml:ro
@@ -218,6 +251,8 @@ services:
         condition: service_started
       nats:
         condition: service_started
+      pg-auth-gateway:
+        condition: service_started
       redis:
         condition: service_started
     networks:
@@ -231,8 +266,8 @@ services:
     container_name: smith-session-recorder
     hostname: session-recorder
     environment:
-      - NATS_URL=nats://nats:4222
-      - SESSION_RECORDER_PG=postgresql://smith:${POSTGRES_PASSWORD:-smith-dev}@postgres:5432/smith
+      - NATS_URL=${SMITH_NATS_DOCKER_URL:?Set SMITH_NATS_DOCKER_URL in .env}
+      - SESSION_RECORDER_PG=postgresql://smith:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/smith
     depends_on:
       nats:
         condition: service_started
@@ -249,8 +284,12 @@ services:
     container_name: smith-cron
     hostname: smith-cron
     environment:
-      - NATS_URL=nats://nats:4222
-      - SMITH_CRON_PG=postgresql://smith_app:smith-app-dev@postgres:5432/smith
+      - NATS_URL=${SMITH_NATS_DOCKER_URL:?Set SMITH_NATS_DOCKER_URL in .env}
+      - SMITH_CRON_PG=postgresql://smith_app:${SMITH_APP_PASSWORD:?Set SMITH_APP_PASSWORD in .env}@postgres:5432/smith
+      - SMITH_CRON_PG_GATEKEEPER=postgresql://smith_gatekeeper:${SMITH_GATEKEEPER_PASSWORD:?Set SMITH_GATEKEEPER_PASSWORD in .env}@postgres:5432/smith
+      - SMITH_CRON_PG_RLS_BIND_TTL_SECS=300
+      - SMITH_CRON_IDENTITY_SECRET=${SMITH_CRON_IDENTITY_SECRET:?Set SMITH_CRON_IDENTITY_SECRET in .env}
+      - SMITH_CRON_IDENTITY_TTL_SECS=${SMITH_CRON_IDENTITY_TTL_SECS:-3600}
     depends_on:
       nats:
         condition: service_started
@@ -277,13 +316,15 @@ services:
     expose:
       - "9100"
     environment:
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_POSTGRES_PSQL_URL=postgresql://smith@envoy:15432/smith?sslmode=disable
+      - MCP_POSTGRES_QUERY_TIMEOUT_SECS=30
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
-      mcp-sidecar:
-        condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
+      envoy:
+        condition: service_started
+      pg-auth-gateway:
+        condition: service_started
     networks:
       - smith
     restart: unless-stopped
@@ -304,8 +345,11 @@ services:
     expose:
       - "9100"
     environment:
-      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith?options=-c%20app.current_user_role%3Dadmin
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - DATABASE_URL=postgresql://smith_app:${SMITH_APP_PASSWORD:?Set SMITH_APP_PASSWORD in .env}@postgres:5432/smith
+      - GATEKEEPER_DATABASE_URL=postgresql://smith_gatekeeper:${SMITH_GATEKEEPER_PASSWORD:?Set SMITH_GATEKEEPER_PASSWORD in .env}@postgres:5432/smith
+      - RLS_BIND_TTL_SECS=300
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
+      - MCP_SIDECAR_IDENTITY_SECRET=${MCP_SIDECAR_IDENTITY_SECRET:-}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -332,9 +376,12 @@ services:
     expose:
       - "9100"
     environment:
-      - DATABASE_URL=postgresql://smith_app:smith-app-dev@postgres:5432/smith?options=-c%20app.current_user_role%3Dadmin
-      - NATS_URL=nats://nats:4222
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - DATABASE_URL=postgresql://smith_app:${SMITH_APP_PASSWORD:?Set SMITH_APP_PASSWORD in .env}@postgres:5432/smith
+      - GATEKEEPER_DATABASE_URL=postgresql://smith_gatekeeper:${SMITH_GATEKEEPER_PASSWORD:?Set SMITH_GATEKEEPER_PASSWORD in .env}@postgres:5432/smith
+      - RLS_BIND_TTL_SECS=300
+      - NATS_URL=${SMITH_NATS_DOCKER_URL:?Set SMITH_NATS_DOCKER_URL in .env}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
+      - MCP_SIDECAR_IDENTITY_SECRET=${MCP_SIDECAR_IDENTITY_SECRET:-}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -364,7 +411,7 @@ services:
       - "9100"
     environment:
       - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -391,7 +438,7 @@ services:
     environment:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     volumes:
       - mcp_credentials:/credentials:ro
@@ -420,7 +467,7 @@ services:
     environment:
       - GA4_PROPERTY_ID=${GA4_PROPERTY_ID:-}
       - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     volumes:
       - mcp_credentials:/credentials:ro
@@ -448,7 +495,7 @@ services:
       - "9100"
     environment:
       - OPENAPI_MCP_HEADERS=${OPENAPI_MCP_HEADERS:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -475,7 +522,7 @@ services:
     environment:
       - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
       - SLACK_TEAM_ID=${SLACK_TEAM_ID:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -504,7 +551,7 @@ services:
       - API_SECRET_KEY=${TWITTER_API_SECRET_KEY:-}
       - ACCESS_TOKEN=${TWITTER_ACCESS_TOKEN:-}
       - ACCESS_TOKEN_SECRET=${TWITTER_ACCESS_TOKEN_SECRET:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -530,7 +577,7 @@ services:
       - "9100"
     environment:
       - DISCORD_TOKEN=${DISCORD_TOKEN:-}
-      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_SIDECAR_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
       - MCP_SIDECAR_ALLOW_UNAUTHENTICATED=${MCP_SIDECAR_ALLOW_UNAUTHENTICATED:-false}
     depends_on:
       mcp-sidecar:
@@ -556,8 +603,9 @@ services:
       - MCP_INDEX_UPSTREAMS=postgres=http://mcp-postgres:9100,users=http://mcp-users:9100,cron=http://mcp-cron:9100,github=http://mcp-github:9100,google=http://mcp-google:9100,google-analytics=http://mcp-google-analytics:9100,notion=http://mcp-notion:9100,slack=http://mcp-slack:9100,twitter=http://mcp-twitter:9100,discord=http://mcp-discord:9100
       - MCP_INDEX_POLL_INTERVAL=30
       - MCP_INDEX_BASE_URL=http://localhost:9200
-      - MCP_INDEX_API_TOKEN=${MCP_INDEX_API_TOKEN:-}
-      - MCP_INDEX_UPSTREAM_API_TOKEN=${MCP_SIDECAR_API_TOKEN:-}
+      - MCP_INDEX_API_TOKEN=${MCP_INDEX_API_TOKEN:?Set MCP_INDEX_API_TOKEN in .env}
+      - MCP_INDEX_UPSTREAM_API_TOKEN=${MCP_SIDECAR_API_TOKEN:?Set MCP_SIDECAR_API_TOKEN in .env}
+      - MCP_INDEX_IDENTITY_SECRET=${MCP_INDEX_IDENTITY_SECRET:?Set MCP_INDEX_IDENTITY_SECRET in .env}
       - MCP_INDEX_ALLOW_UNAUTHENTICATED=${MCP_INDEX_ALLOW_UNAUTHENTICATED:-false}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}

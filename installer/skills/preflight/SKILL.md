@@ -49,7 +49,7 @@ cat > var/installer/preflight.json <<JSON
   "docker": "'$(docker --version 2>/dev/null || echo missing)'",
   "compose": "'$(docker compose version 2>/dev/null || echo missing)'",
   "cargo": "'$(cargo --version 2>/dev/null || echo optional)'",
-  "postgres_password_default": "'$( [ "${POSTGRES_PASSWORD}" = "smith-dev" ] && echo yes || echo no )'",
+  "postgres_password_default": "'$( [ -z "${POSTGRES_PASSWORD}" ] || [ "${POSTGRES_PASSWORD}" = "smith-dev" ] && echo yes || echo no )'",
   "mcp_index_token_set": "'$( [ -n "${MCP_INDEX_API_TOKEN}" ] && echo yes || echo no )'",
   "cloudflare_tunnel_hint": "'$( [ -n "${CLOUDFLARE_TUNNEL_TOKEN}" ] && echo yes || echo no )'",
   "tailscale_hint": "'$( [ -n "${TAILSCALE_AUTHKEY}" ] && echo yes || echo no )'"

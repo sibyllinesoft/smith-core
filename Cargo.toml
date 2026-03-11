@@ -1,8 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-    "service/mcp-sidecar",
-    "service/mcp-index",
     "service/smith-chat",
     "service/admission",
 ]
@@ -14,7 +12,7 @@ edition = "2021"
 authors = ["Smith Team"]
 license = "MIT"
 repository = "https://github.com/sibyllinesoft/smith-core"
-homepage = "https://smithcore.dev"
+homepage = "https://sibylline.dev/products/smith"
 description = "Open-source AI agent platform with secure execution and multi-platform chat"
 
 [workspace.lints.rust]

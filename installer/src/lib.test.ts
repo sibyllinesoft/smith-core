@@ -12,7 +12,7 @@ import {
 import type { InstallerOptions } from "./lib.js";
 
 // Helper: build argv with node + script prefix
-const argv = (...flags: string[]) => ["node", "smith-install", ...flags];
+const argv = (...flags: string[]) => ["node", "smith install", ...flags];
 
 // ── parseArgs ────────────────────────────────────────────────────────
 
@@ -26,6 +26,7 @@ describe("parseArgs", () => {
       thinkingLevel: "medium",
       force: false,
       help: false,
+      harness: undefined,
     });
   });
 
@@ -65,12 +66,17 @@ describe("parseArgs", () => {
     expect(parseArgs(argv("--repo", "/tmp/smith")).repo).toBe("/tmp/smith");
   });
 
+  it("parses --harness value", () => {
+    expect(parseArgs(argv("--harness", "codex")).harness).toBe("codex");
+  });
+
   it("handles combined flags", () => {
-    const args = parseArgs(argv("--force", "--non-interactive", "--step", "90", "--provider", "local"));
+    const args = parseArgs(argv("--force", "--non-interactive", "--step", "90", "--provider", "local", "--harness", "claude"));
     expect(args.force).toBe(true);
     expect(args.nonInteractive).toBe(true);
     expect(args.step).toBe("90");
     expect(args.provider).toBe("local");
+    expect(args.harness).toBe("claude");
   });
 
   it("throws on unknown option", () => {
@@ -170,14 +176,18 @@ describe("buildSystemPrompt", () => {
 
 describe("evaluateInstallerSecurity", () => {
   it("flags weak defaults and missing private-network indicators", () => {
-    const root = mkdtempSync(join(tmpdir(), "smith-installer-sec-"));
+    const root = mkdtempSync(join(tmpdir(), "smith-sec-"));
     writeFileSync(
       join(root, ".env.example"),
       [
         "POSTGRES_PASSWORD=smith-dev",
+        "SMITH_APP_PASSWORD=smith-app-dev",
+        "SMITH_READONLY_PASSWORD=smith-readonly-dev",
+        "SMITH_GATEKEEPER_PASSWORD=smith-gatekeeper-dev",
         "CLICKHOUSE_PASSWORD=observability-dev",
         "GRAFANA_ADMIN_PASSWORD=admin",
         "MCP_INDEX_API_TOKEN=",
+        "SMITH_NATS_URL=nats://127.0.0.1:4222",
         "AGENTD_CAPABILITY_DIGEST=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
       ].join("\n")
     );
@@ -194,18 +204,23 @@ describe("evaluateInstallerSecurity", () => {
   });
 
   it("prefers .env over .env.example and suppresses warnings for strong values", () => {
-    const root = mkdtempSync(join(tmpdir(), "smith-installer-sec-"));
+    const root = mkdtempSync(join(tmpdir(), "smith-sec-"));
     mkdirSync(root, { recursive: true });
     writeFileSync(join(root, ".env.example"), "POSTGRES_PASSWORD=smith-dev\n");
     writeFileSync(
       join(root, ".env"),
       [
         "POSTGRES_PASSWORD=SuperLongUniqueSecretValue123!",
+        "SMITH_APP_PASSWORD=AppSecret1234567890!",
+        "SMITH_READONLY_PASSWORD=ReadonlySecret1234567890!",
+        "SMITH_GATEKEEPER_PASSWORD=GatekeeperSecret1234567890!",
         "CLICKHOUSE_PASSWORD=AnotherLongSecretValue456!",
         "GRAFANA_ADMIN_PASSWORD=DifferentLongSecret789!",
         "MCP_INDEX_API_TOKEN=very-long-random-token-value-123456",
         "MCP_SIDECAR_API_TOKEN=very-long-random-sidecar-token-value-123456",
         "CHAT_BRIDGE_ADMIN_TOKEN=very-long-random-chat-admin-token-value-123456",
+        "SMITH_NATS_URL=nats://smith:very-long-random-nats-secret@127.0.0.1:4222",
+        "SMITH_NATS_DOCKER_URL=nats://smith:very-long-random-nats-secret@nats:4222",
         "AGENTD_CAPABILITY_DIGEST=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "CLOUDFLARE_TUNNEL_TOKEN=test-tunnel-token",
       ].join("\n")
@@ -222,16 +237,21 @@ describe("evaluateInstallerSecurity", () => {
   });
 
   it("accepts hostname/url indicators for private-network hints", () => {
-    const root = mkdtempSync(join(tmpdir(), "smith-installer-sec-"));
+    const root = mkdtempSync(join(tmpdir(), "smith-sec-"));
     writeFileSync(
       join(root, ".env"),
       [
         "POSTGRES_PASSWORD=good-secret-1",
+        "SMITH_APP_PASSWORD=good-secret-4",
+        "SMITH_READONLY_PASSWORD=good-secret-5",
+        "SMITH_GATEKEEPER_PASSWORD=good-secret-6",
         "CLICKHOUSE_PASSWORD=good-secret-2",
         "GRAFANA_ADMIN_PASSWORD=good-secret-3",
         "MCP_INDEX_API_TOKEN=long-token-1234567890",
         "MCP_SIDECAR_API_TOKEN=long-sidecar-token-1234567890",
         "CHAT_BRIDGE_ADMIN_TOKEN=long-chat-admin-token-1234567890",
+        "SMITH_NATS_URL=nats://smith:good-nats-secret-1234567890@127.0.0.1:4222",
+        "SMITH_NATS_DOCKER_URL=nats://smith:good-nats-secret-1234567890@nats:4222",
         "AGENTD_CAPABILITY_DIGEST=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "CLOUDFLARE_TUNNEL_HOSTNAME=agent.example.com",
         "TAILSCALE_TUNNEL_E2E_URL=https://smith-core.tailnet.ts.net/health",
@@ -247,16 +267,21 @@ describe("evaluateInstallerSecurity", () => {
   });
 
   it("warns when AGENTD_GRPC_LISTEN is non-loopback", () => {
-    const root = mkdtempSync(join(tmpdir(), "smith-installer-sec-"));
+    const root = mkdtempSync(join(tmpdir(), "smith-sec-"));
     writeFileSync(
       join(root, ".env"),
       [
         "POSTGRES_PASSWORD=good-secret-1",
+        "SMITH_APP_PASSWORD=good-secret-4",
+        "SMITH_READONLY_PASSWORD=good-secret-5",
+        "SMITH_GATEKEEPER_PASSWORD=good-secret-6",
         "CLICKHOUSE_PASSWORD=good-secret-2",
         "GRAFANA_ADMIN_PASSWORD=good-secret-3",
         "MCP_INDEX_API_TOKEN=long-token-1234567890",
         "MCP_SIDECAR_API_TOKEN=long-sidecar-token-1234567890",
         "CHAT_BRIDGE_ADMIN_TOKEN=long-chat-admin-token-1234567890",
+        "SMITH_NATS_URL=nats://smith:good-nats-secret-1234567890@127.0.0.1:4222",
+        "SMITH_NATS_DOCKER_URL=nats://smith:good-nats-secret-1234567890@nats:4222",
         "AGENTD_CAPABILITY_DIGEST=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         "TAILSCALE_AUTHKEY=tskey-abc",
         "AGENTD_GRPC_LISTEN=0.0.0.0:9500",
@@ -265,6 +290,67 @@ describe("evaluateInstallerSecurity", () => {
 
     const report = evaluateInstallerSecurity(root);
     expect(report.warnings.map((w) => w.id)).toContain("agentd-grpc-non-loopback");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("warns when NATS URLs are unauthenticated", () => {
+    const root = mkdtempSync(join(tmpdir(), "smith-sec-"));
+    writeFileSync(
+      join(root, ".env"),
+      [
+        "POSTGRES_PASSWORD=good-secret-1",
+        "SMITH_APP_PASSWORD=good-secret-4",
+        "SMITH_READONLY_PASSWORD=good-secret-5",
+        "SMITH_GATEKEEPER_PASSWORD=good-secret-6",
+        "CLICKHOUSE_PASSWORD=good-secret-2",
+        "GRAFANA_ADMIN_PASSWORD=good-secret-3",
+        "MCP_INDEX_API_TOKEN=long-token-1234567890",
+        "MCP_SIDECAR_API_TOKEN=long-sidecar-token-1234567890",
+        "CHAT_BRIDGE_ADMIN_TOKEN=long-chat-admin-token-1234567890",
+        "SMITH_NATS_URL=nats://127.0.0.1:4222",
+        "SMITH_NATS_DOCKER_URL=nats://nats:4222",
+        "AGENTD_CAPABILITY_DIGEST=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "TAILSCALE_AUTHKEY=tskey-abc",
+      ].join("\n")
+    );
+
+    const report = evaluateInstallerSecurity(root);
+    const ids = report.warnings.map((w) => w.id);
+    expect(ids).toContain("unauthenticated-nats-url");
+    expect(ids).toContain("unauthenticated-docker-nats-url");
+
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("warns when egress policy defaults to allow", () => {
+    const root = mkdtempSync(join(tmpdir(), "smith-sec-"));
+    mkdirSync(join(root, "infra", "opa", "policy", "smith", "egress"), { recursive: true });
+    writeFileSync(
+      join(root, ".env"),
+      [
+        "POSTGRES_PASSWORD=good-secret-1",
+        "SMITH_APP_PASSWORD=good-secret-4",
+        "SMITH_READONLY_PASSWORD=good-secret-5",
+        "SMITH_GATEKEEPER_PASSWORD=good-secret-6",
+        "CLICKHOUSE_PASSWORD=good-secret-2",
+        "GRAFANA_ADMIN_PASSWORD=good-secret-3",
+        "MCP_INDEX_API_TOKEN=long-token-1234567890",
+        "MCP_SIDECAR_API_TOKEN=long-sidecar-token-1234567890",
+        "CHAT_BRIDGE_ADMIN_TOKEN=long-chat-admin-token-1234567890",
+        "SMITH_NATS_URL=nats://smith:good-nats-secret-1234567890@127.0.0.1:4222",
+        "SMITH_NATS_DOCKER_URL=nats://smith:good-nats-secret-1234567890@nats:4222",
+        "AGENTD_CAPABILITY_DIGEST=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "TAILSCALE_AUTHKEY=tskey-abc",
+      ].join("\n")
+    );
+    writeFileSync(
+      join(root, "infra", "opa", "policy", "smith", "egress", "data.json"),
+      JSON.stringify({ default: "allow", domain_denylist: {}, domain_allowlist: {} })
+    );
+
+    const report = evaluateInstallerSecurity(root);
+    expect(report.warnings.map((w) => w.id)).toContain("egress-default-allow");
 
     rmSync(root, { recursive: true, force: true });
   });

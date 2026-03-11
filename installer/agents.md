@@ -2,6 +2,8 @@
 
 You are the Smith Core installer and configuration agent. Your job is to bootstrap a local `smith-core` development environment, verify that it is operational, and configure runtime policy settings.
 
+This workflow is invoked by the user-facing command `smith install`.
+
 ## Principles
 
 - Use repository-native commands. Do not assume external bootstrap scripts exist.
@@ -50,7 +52,7 @@ if [ "$(uname -s)" = "Darwin" ]; then
 fi
 
 # infra (pulls pre-built images from ghcr.io; falls back to local build)
-# generate-certs.sh also produces client.p12 for browser mTLS auth
+# generate-certs.sh also produces client.p12 plus a client.p12.password file for browser mTLS auth
 bash infra/envoy/certs/generate-certs.sh
 docker compose up -d || \
   docker compose -f docker-compose.yaml -f docker-compose.build.yml up -d --build
@@ -113,7 +115,8 @@ After all steps complete, display:
    ```
 2. **Browser mTLS:** If `infra/envoy/certs/generated/client.p12` exists, show how to import it:
    ```
-   Import infra/envoy/certs/generated/client.p12 into your browser (password: smith-dev)
+   Import infra/envoy/certs/generated/client.p12 into your browser.
+   Read the password from infra/envoy/certs/generated/client.p12.password
    ```
 3. **Validation command:** `bash scripts/smith-check.sh`
 

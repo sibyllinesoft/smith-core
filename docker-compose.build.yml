@@ -1,7 +1,8 @@
-# Source-build override for mcp-sidecar and mcp-index.
+# Source-build override for mcp-sidecar, mcp-index, and pg-auth-gateway.
 #
 # By default, docker-compose.yaml pulls pre-built images from ghcr.io.
-# Use this file when you need to build from local source:
+# Use this file when you need to build from local source in the sibling
+# smith-tool-gateway repo:
 #
 #   docker compose -f docker-compose.yaml -f docker-compose.build.yml build
 #   docker compose -f docker-compose.yaml -f docker-compose.build.yml up -d
@@ -9,10 +10,15 @@
 services:
   mcp-sidecar:
     build:
-      context: .
+      context: ../smith-tool-gateway
       dockerfile: service/mcp-sidecar/Dockerfile
 
   mcp-index:
     build:
-      context: .
+      context: ../smith-tool-gateway
       dockerfile: service/mcp-index/Dockerfile
+
+  pg-auth-gateway:
+    build:
+      context: ../smith-tool-gateway
+      dockerfile: service/pg-auth-gateway/Dockerfile

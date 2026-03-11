@@ -1,5 +1,5 @@
 {
-  "name": "@sibyllinesoft/smith-installer",
+  "name": "@sibyllinesoft/smith",
   "version": "0.2.4",
   "description": "AI-guided Smith platform installer powered by pi-agent",
   "license": "MIT",
@@ -8,13 +8,12 @@
     "url": "https://github.com/sibyllinesoft/smith-core.git",
     "directory": "installer"
   },
-  "homepage": "https://smithcore.dev",
+  "homepage": "https://sibylline.dev/products/smith",
   "bugs": {
     "url": "https://github.com/sibyllinesoft/smith-core/issues"
   },
   "type": "module",
   "bin": {
-    "smith-install": "./dist/cli.js",
     "smith": "./dist/smith.js"
   },
   "main": "./dist/index.js",

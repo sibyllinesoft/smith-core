@@ -26,6 +26,8 @@ credentials/
 *.pem
 *.key
 *.crt
+*.p12
+*.password
 
 # Build artifacts
 build/

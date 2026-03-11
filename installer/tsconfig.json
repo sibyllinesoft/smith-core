@@ -19,6 +19,7 @@
   "include": [
     "src/index.ts",
     "src/cli.ts",
+    "src/harness.ts",
     "src/agents.ts",
     "src/lib.ts",
     "src/smith.ts"

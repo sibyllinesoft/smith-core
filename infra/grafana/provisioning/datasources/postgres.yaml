@@ -11,4 +11,4 @@ datasources:
       database: smith
       sslmode: disable
     secureJsonData:
-      password: smith-readonly-dev
+      password: ${SMITH_READONLY_PASSWORD}

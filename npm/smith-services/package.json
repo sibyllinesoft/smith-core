@@ -7,7 +7,7 @@
     "type": "git",
     "url": "git+https://github.com/sibyllinesoft/smith-core.git"
   },
-  "homepage": "https://smithcore.dev",
+  "homepage": "https://sibylline.dev/products/smith",
   "bin": {
     "smith-chat-daemon": "bin/smith-chat-daemon",
     "smith-discord-gateway": "bin/smith-discord-gateway",

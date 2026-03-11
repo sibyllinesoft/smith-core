@@ -8,7 +8,7 @@
 // OTel SDK must initialize before anything else
 import "./tracing.js";
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { trace, context, type Span, SpanStatusCode } from "@opentelemetry/api";
 import { readFileSync } from "node:fs";
 import { writeFile, mkdir } from "node:fs/promises";
@@ -47,10 +47,15 @@ const AGENTD_PATHS_RO = (process.env.AGENTD_PATHS_RO ?? "/etc,/usr").split(",").
 const AGENT_ID = process.env.AGENT_ID ?? "smith-default";
 const PI_SESSION_IDLE_TTL_MS = envMs("PI_SESSION_IDLE_TTL_MS", 1_800_000, 5_000);
 const PI_SESSION_CLEANUP_INTERVAL_MS = envMs("PI_SESSION_CLEANUP_INTERVAL_MS", 60_000, 1_000);
-const PG_URL = process.env.PI_BRIDGE_PG ?? "postgresql://smith:smith-dev@postgres:5432/smith";
-const PG_APP_URL = process.env.PI_BRIDGE_PG_APP ?? "postgresql://smith_app:smith-app-dev@postgres:5432/smith";
+const PG_URL = process.env.PI_BRIDGE_PG ?? "postgresql://smith:__set_via_env__@postgres:5432/smith";
+const PG_APP_URL = process.env.PI_BRIDGE_PG_APP ?? "postgresql://smith_app:__set_via_env__@postgres:5432/smith";
+const PG_GATEKEEPER_URL =
+  process.env.PI_BRIDGE_PG_GATEKEEPER ?? "postgresql://smith_gatekeeper:__set_via_env__@postgres:5432/smith";
+const PG_RLS_BIND_TTL_SECS = Math.max(1, Math.floor(Number(process.env.PI_BRIDGE_PG_RLS_BIND_TTL_SECS ?? "300")) || 300);
+const IDENTITY_SECRET = (process.env.PI_BRIDGE_IDENTITY_SECRET ?? process.env.CHAT_BRIDGE_IDENTITY_SECRET ?? "").trim();
 const pgPool = new pg.Pool({ connectionString: PG_URL, max: 2 });        // superuser — identity resolution only
 const pgAppPool = new pg.Pool({ connectionString: PG_APP_URL, max: 5 }); // RLS-enforced
+const pgGatekeeperPool = new pg.Pool({ connectionString: PG_GATEKEEPER_URL, max: 5 });
 const BASE_SYSTEM_PROMPT =
   process.env.PI_SYSTEM_PROMPT ??
   `You are Smith, an AI assistant. Your identity is '${AGENT_ID}'.
@@ -223,7 +228,115 @@ const GUEST_USER: ResolvedUser = {
   config: {},
 };
 
+interface IdentityJwtClaims {
+  principal?: string;
+  smith_user_id?: string;
+  smith_user_role?: string;
+  exp?: number;
+  iat?: number;
+}
+
+function getIdentityToken(metadata?: Record<string, unknown>): string | null {
+  const token = metadata?.["x-oc-identity-token"];
+  return typeof token === "string" && token.trim() ? token.trim() : null;
+}
+
+function decodeBase64Url(segment: string): Buffer {
+  const normalized = segment.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  return Buffer.from(padded, "base64");
+}
+
+function verifyIdentityToken(token: string): IdentityJwtClaims | null {
+  if (!IDENTITY_SECRET) {
+    console.warn("[pi-bridge] signed identity token received but PI_BRIDGE_IDENTITY_SECRET is unset");
+    return null;
+  }
+
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    console.warn("[pi-bridge] invalid identity token format");
+    return null;
+  }
+
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  try {
+    const header = JSON.parse(decodeBase64Url(encodedHeader).toString("utf8")) as { alg?: string; typ?: string };
+    if (header.alg !== "HS256") {
+      console.warn(`[pi-bridge] unsupported identity token alg: ${header.alg ?? "unknown"}`);
+      return null;
+    }
+
+    const expectedSignature = createHmac("sha256", IDENTITY_SECRET)
+      .update(`${encodedHeader}.${encodedPayload}`)
+      .digest();
+    const actualSignature = decodeBase64Url(encodedSignature);
+    if (
+      actualSignature.length !== expectedSignature.length ||
+      !timingSafeEqual(actualSignature, expectedSignature)
+    ) {
+      console.warn("[pi-bridge] identity token signature verification failed");
+      return null;
+    }
+
+    const claims = JSON.parse(decodeBase64Url(encodedPayload).toString("utf8")) as IdentityJwtClaims;
+    if (!Number.isFinite(claims.exp)) {
+      console.warn("[pi-bridge] identity token missing exp");
+      return null;
+    }
+    const now = Math.floor(Date.now() / 1000);
+    if ((claims.exp as number) <= now) {
+      console.warn("[pi-bridge] identity token expired");
+      return null;
+    }
+    return claims;
+  } catch (err) {
+    console.warn("[pi-bridge] failed to decode identity token:", err);
+    return null;
+  }
+}
+
 async function resolveUser(metadata?: Record<string, unknown>): Promise<ResolvedUser | null> {
+  const identityToken = getIdentityToken(metadata);
+  if (identityToken) {
+    const claims = verifyIdentityToken(identityToken);
+    if (!claims?.smith_user_id || !claims.smith_user_role) {
+      return null;
+    }
+
+    const metadataSenderId = typeof metadata?.sender_id === "string" ? metadata.sender_id : "";
+    if (metadataSenderId && claims.principal && metadataSenderId !== claims.principal) {
+      console.warn(
+        `[pi-bridge] identity token principal mismatch (sender=${metadataSenderId}, token=${claims.principal})`
+      );
+      return null;
+    }
+
+    try {
+      const result = await pgPool.query(
+        `SELECT id, username, display_name, role, config
+         FROM users
+         WHERE id = $1 AND active = true`,
+        [claims.smith_user_id]
+      );
+      const user = (result.rows[0] as ResolvedUser | undefined) ?? null;
+      if (!user) {
+        console.warn(`[pi-bridge] identity token user not found or inactive: ${claims.smith_user_id}`);
+        return null;
+      }
+      if (user.role !== claims.smith_user_role) {
+        console.warn(
+          `[pi-bridge] identity token role mismatch for ${claims.smith_user_id}: token=${claims.smith_user_role} db=${user.role}`
+        );
+        return null;
+      }
+      return user;
+    } catch (err) {
+      console.error("[pi-bridge] resolveUser(token) failed:", err);
+      return null;
+    }
+  }
+
   const platform = (metadata?.source as string) ?? null;
   const platformUserId = (metadata?.sender_id as string) ?? null;
   if (!platform || !platformUserId) return null;
@@ -245,10 +358,24 @@ async function resolveUser(metadata?: Record<string, unknown>): Promise<Resolved
 
 async function queryAsUser(userId: string, role: string, sql: string, params: any[]): Promise<pg.QueryResult> {
   const client = await pgAppPool.connect();
+  const gatekeeper = await pgGatekeeperPool.connect();
+  let backendPid: number | null = null;
+  let backendStart: string | null = null;
   try {
     await client.query("BEGIN");
-    await client.query("SET LOCAL app.current_user_id = $1", [userId]);
-    await client.query("SET LOCAL app.current_user_role = $1", [role]);
+    const binding = await client.query<{ backend_pid: number; backend_start: string }>(
+      "SELECT backend_pid, backend_start FROM public.current_backend_binding_key()",
+      []
+    );
+    backendPid = binding.rows[0]?.backend_pid ?? null;
+    backendStart = binding.rows[0]?.backend_start ?? null;
+    if (!backendPid || !backendStart) {
+      throw new Error("failed to determine postgres backend binding key");
+    }
+    await gatekeeper.query(
+      "SELECT public.bind_rls_session($1, $2, $3, $4, $5)",
+      [backendPid, backendStart, userId, role, PG_RLS_BIND_TTL_SECS]
+    );
     const result = await client.query(sql, params);
     await client.query("COMMIT");
     return result;
@@ -256,6 +383,17 @@ async function queryAsUser(userId: string, role: string, sql: string, params: an
     await client.query("ROLLBACK");
     throw err;
   } finally {
+    if (backendPid && backendStart) {
+      try {
+        await gatekeeper.query(
+          "SELECT public.unbind_rls_session($1, $2)",
+          [backendPid, backendStart]
+        );
+      } catch (unbindErr) {
+        console.error("[pi-bridge] failed to unbind RLS session:", unbindErr);
+      }
+    }
+    gatekeeper.release();
     client.release();
   }
 }
@@ -809,6 +947,8 @@ interface AgentSession {
   sessionSpan: Span;
   turnCount: number;
   user: ResolvedUser;
+  source: string;
+  senderId: string;
   lastActiveAt: number;
 }
 
@@ -819,10 +959,17 @@ interface McpToolDef {
   input_schema?: any;
 }
 
-function mcpIndexHeaders(extra: Record<string, string> = {}): Record<string, string> {
+function mcpIndexHeaders(
+  extra: Record<string, string> = {},
+  metadata?: Record<string, unknown>,
+): Record<string, string> {
   const headers: Record<string, string> = { ...extra };
   if (MCP_INDEX_API_TOKEN) {
     headers.authorization = `Bearer ${MCP_INDEX_API_TOKEN}`;
+  }
+  const identityToken = metadata?.["x-oc-identity-token"];
+  if (typeof identityToken === "string" && identityToken.trim()) {
+    headers["x-oc-identity-token"] = identityToken.trim();
   }
   return headers;
 }
@@ -859,7 +1006,10 @@ async function fetchMcpTools(): Promise<McpToolDef[]> {
   }
 }
 
-function buildAgentTools(mcpTools: McpToolDef[]): any[] {
+function buildAgentTools(
+  mcpTools: McpToolDef[],
+  getToolAccessCtx?: () => ToolAccessContext,
+): any[] {
   return mcpTools.map((tool) => {
     // Namespace tool name with server to avoid collisions
     const qualifiedName = `${tool.server}__${tool.name}`;
@@ -872,9 +1022,10 @@ function buildAgentTools(mcpTools: McpToolDef[]): any[] {
       execute: async (_toolCallId: string, params: any) => {
         console.log(`[pi-bridge] Tool call: ${tool.server}/${tool.name}`, JSON.stringify(params).slice(0, 200));
         try {
+          const metadata = getToolAccessCtx?.().metadata;
           const resp = await fetch(`${MCP_INDEX_URL}/api/tools/call`, {
             method: "POST",
-            headers: mcpIndexHeaders({ "content-type": "application/json" }),
+            headers: mcpIndexHeaders({ "content-type": "application/json" }, metadata),
             body: JSON.stringify({
               server: tool.server,
               tool: tool.name,
@@ -939,9 +1090,10 @@ function buildMcpMetaTools(
           const url = new URL(`${MCP_INDEX_URL}/api/tools/search`);
           url.searchParams.set("q", query);
           if (params.server) url.searchParams.set("server", params.server);
+          const ctx = getToolAccessCtx();
 
           const resp = await fetch(url.toString(), {
-            headers: mcpIndexHeaders(),
+            headers: mcpIndexHeaders({}, ctx.metadata),
             signal: AbortSignal.timeout(10_000),
           });
           if (!resp.ok) {
@@ -954,7 +1106,6 @@ function buildMcpMetaTools(
           let results: McpToolDef[] = await resp.json();
 
           // Filter through OPA cached policy so LLM only sees accessible tools
-          const ctx = getToolAccessCtx();
           if (!cachedPolicyData) {
             await refreshPolicyCache();
           }
@@ -1064,7 +1215,7 @@ function buildMcpMetaTools(
         try {
           const resp = await fetch(`${MCP_INDEX_URL}/api/tools/call`, {
             method: "POST",
-            headers: mcpIndexHeaders({ "content-type": "application/json" }),
+            headers: mcpIndexHeaders({ "content-type": "application/json" }, ctx.metadata),
             body: JSON.stringify({ server, tool, arguments: args ?? {} }),
             signal: AbortSignal.timeout(30_000),
           });
@@ -1095,11 +1246,14 @@ function buildMcpMetaTools(
 
 // ── Core MCP Tools (loaded as first-class agent tools) ───────────────
 
-function buildCoreMcpTools(mcpTools: McpToolDef[]): any[] {
+function buildCoreMcpTools(
+  mcpTools: McpToolDef[],
+  getToolAccessCtx: () => ToolAccessContext,
+): any[] {
   const coreTools = mcpTools.filter((t) =>
     MCP_CORE_TOOLS.includes(`${t.server}__${t.name}`)
   );
-  return buildAgentTools(coreTools);
+  return buildAgentTools(coreTools, getToolAccessCtx);
 }
 
 // ── Agentd Tool Discovery & Execution ────────────────────────────────
@@ -2918,8 +3072,17 @@ async function handleSessionStart(
   const steeringSubject = `smith.sessions.${sessionId}.steering`;
   const responseSubject = `smith.sessions.${sessionId}.response`;
 
+  const hasIdentityToken = getIdentityToken(request.metadata) !== null;
+  const trigger = (request.metadata?.trigger as string) ?? "chat";
+
   // Resolve user from platform identity (server-side, tamper-proof)
+  if (!hasIdentityToken) {
+    throw new Error(`rejected ${trigger} session start without signed identity`);
+  }
   const user = await resolveUser(request.metadata);
+  if (!user) {
+    throw new Error("rejected session start with invalid signed identity");
+  }
   if (user) {
     console.log(`[pi-bridge] New session ${sessionId} user=${user.username} role=${user.role} goal="${request.goal.slice(0, 80)}"`);
   } else {
@@ -2992,7 +3155,7 @@ async function handleSessionStart(
   };
 
   // Lazy MCP discovery: only core tools are first-class, rest via meta-tools
-  const sessionCoreMcpTools = buildCoreMcpTools(mcpTools);
+  const sessionCoreMcpTools = buildCoreMcpTools(mcpTools, () => toolAccessCtx);
   const sessionMetaTools = buildMcpMetaTools(mcpTools, () => toolAccessCtx);
   const allTools = [...sessionCoreMcpTools, ...sessionMetaTools, ...sessionCapTools, ...sessionFileTools, ...sessionNoteTools, ...sessionUserMgmtTools];
   const sessionTools = await evaluateToolAccess(toolAccessCtx, allTools);
@@ -3106,6 +3269,8 @@ async function handleSessionStart(
     sessionSpan,
     turnCount: 0,
     user: effectiveUser,
+    source: (request.metadata?.source as string) ?? "unknown",
+    senderId: (request.metadata?.sender_id as string) ?? "",
     lastActiveAt: Date.now(),
   };
   sessions.set(sessionId, session);
@@ -3621,6 +3786,60 @@ async function handleSteering(nc: NatsConnection, sessionId: string) {
 
       const steering: SteeringMessage = JSON.parse(sc.decode(msg.data));
       if (steering.role === "user" && steering.content) {
+        const messageSource = (steering.metadata?.source as string) ?? "unknown";
+        const messageSenderId = (steering.metadata?.sender_id as string) ?? "";
+        const hasIdentityToken = getIdentityToken(steering.metadata) !== null;
+        if (!hasIdentityToken) {
+          console.warn(
+            `[pi-bridge] [${sessionId.slice(0, 8)}] Rejected unsigned steering from ${messageSource}:${messageSenderId || "unknown"}`
+          );
+          nc.publish(
+            session.responseSubject,
+            sc.encode(JSON.stringify({
+              type: "message",
+              content: "Access denied: this message is missing signed identity metadata.",
+              done: true,
+            }))
+          );
+          continue;
+        }
+        const resolvedSteeringUser = await resolveUser(steering.metadata);
+        if (!resolvedSteeringUser) {
+          console.warn(
+            `[pi-bridge] [${sessionId.slice(0, 8)}] Rejected steering with invalid signed identity from ${messageSource}:${messageSenderId || "unknown"}`
+          );
+          nc.publish(
+            session.responseSubject,
+            sc.encode(JSON.stringify({
+              type: "message",
+              content: "Access denied: this message has invalid signed identity metadata.",
+              done: true,
+            }))
+          );
+          continue;
+        }
+        const effectiveSteeringUser = resolvedSteeringUser;
+
+        if (
+          messageSource !== session.source ||
+          messageSenderId !== session.senderId ||
+          effectiveSteeringUser.id !== session.user.id ||
+          effectiveSteeringUser.role !== session.user.role
+        ) {
+          console.warn(
+            `[pi-bridge] [${sessionId.slice(0, 8)}] Rejected steering from ${messageSource}:${messageSenderId || "unknown"} ` +
+            `for session owner ${session.source}:${session.senderId || "unknown"}`
+          );
+          nc.publish(
+            session.responseSubject,
+            sc.encode(JSON.stringify({
+              type: "message",
+              content: "Access denied: this message sender does not match the authenticated session owner.",
+              done: true,
+            }))
+          );
+          continue;
+        }
         await runAgentPrompt(nc, sessionId, steering.content);
       }
     } catch (err) {

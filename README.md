@@ -21,13 +21,14 @@ I built Smith to solve these problems. Smith was designed from the ground up wit
 Requires **Node >= 22** and **Docker**.
 
 ```bash
-npx @sibyllinesoft/smith-installer
+npx @sibyllinesoft/smith install
+npx @sibyllinesoft/smith install --harness codex
 ```
 
 The installer is an AI-guided setup agent. It detects your system, walks you through configuration, and gets the stack running. For headless/CI environments:
 
 ```bash
-npx @sibyllinesoft/smith-installer --non-interactive
+npx @sibyllinesoft/smith install --non-interactive
 ```
 
 The installer emits non-blocking security warnings if it detects weak default
@@ -35,6 +36,27 @@ secrets or missing private-network hints (for example Cloudflare Tunnel or
 Tailscale configuration).
 On macOS, the installer also writes Gondolin VM defaults into `.env` so
 persistent sandbox sessions are enabled out of the box.
+Interactive installs can use `pi` (default), `codex`, `claude`, or `opencode`
+via `--harness`, and the installer passes the same generated AGENTS/skills
+context bundle to each harness.
+
+## CLI
+
+The single user-facing CLI is `smith`.
+
+Common commands:
+
+```bash
+smith install
+smith install --harness codex
+smith install --non-interactive
+smith status
+smith pair --user-id <uuid>
+smith token
+```
+
+Service executables such as `smith-chat-daemon` and `smith-discord-gateway`
+are runtime binaries, not separate user CLIs.
 
 ### From source
 
@@ -151,10 +173,17 @@ just run-mcp-sidecar -- npx @modelcontextprotocol/server-filesystem /data
 ```
 
 Supports optional middleware transforms (TOML config) for input injection, output redaction, argument filtering, and more.
+Source lives in the dedicated sibling repo `../smith-tool-gateway`.
 
 ### MCP Index — Tool catalog
 
 Aggregates tools from multiple MCP sidecar instances into a single searchable catalog. Agents query one endpoint to discover all available tools. Polls upstream sidecars at configurable intervals.
+Source lives in the dedicated sibling repo `../smith-tool-gateway`.
+
+### PG Auth Gateway
+
+Accepts standard Postgres wire clients, validates the Smith identity token, and binds hardened RLS context in PostgreSQL before any query executes.
+Source lives in the dedicated sibling repo `../smith-tool-gateway`.
 
 ### Admission control
 
@@ -171,7 +200,7 @@ The full stack ships with:
 
 ## Infrastructure
 
-`docker compose up` starts 14 services:
+`docker compose up` starts 15 services:
 
 | Service | Purpose | Port |
 |---------|---------|------|
@@ -182,7 +211,8 @@ The full stack ships with:
 | OTEL Collector | Trace/metrics pipeline | — |
 | Grafana | Dashboards | 3000 |
 | OPA | Policy engine | 8181 |
-| Envoy | mTLS gateway / egress proxy | 6173, 6174 |
+| Envoy | mTLS gateway / egress proxy / Postgres TCP proxy | 6173, 6174, 6175 |
+| PG Auth Gateway | Token-validated Postgres access | — |
 | Session Recorder | Chat session persistence | — |
 | Smith Cron | Scheduled tasks | — |
 | MCP Postgres | DB tools via MCP | — |
@@ -215,8 +245,6 @@ smith-core/
 ├── agent/
 │   └── pi-bridge/       # AI reasoning bridge (TypeScript)
 ├── service/
-│   ├── mcp-sidecar/        # MCP stdio-to-HTTP bridge
-│   ├── mcp-index/       # Unified tool catalog
 │   ├── smith-chat/      # Chat adapters + 10 gateway binaries
 │   ├── admission/       # OPA policy sync
 │   └── smith-cron/      # Cron scheduler
@@ -230,18 +258,28 @@ smith-core/
 └── justfile             # Development commands
 ```
 
+Related repo: `../smith-tool-gateway` contains `mcp-index`, `mcp-sidecar`, and `pg-auth-gateway`.
+
 ## Configuration
 
-Services are configured through environment variables. Copy `.env.example` to `.env` and adjust:
+Services are configured through environment variables. The intended path is:
+
+```bash
+smith install
+```
+
+The installer copies `.env.example`, generates local credentials, and writes authenticated local URLs for NATS and PostgreSQL. If you skip the installer, copy `.env.example` to `.env` and fill every blank secret before starting the stack:
 
 ```bash
 # Core
-NATS_URL=nats://localhost:4222
-SMITH_DATABASE_URL=postgresql://smith:smith-dev@localhost:5432/smith
+SMITH_NATS_URL=nats://smith:<generated>@127.0.0.1:4222
+SMITH_NATS_DOCKER_URL=nats://smith:<generated>@nats:4222
+SMITH_DATABASE_URL=postgresql://smith:<generated>@localhost:5432/smith
 AGENTD_ROOT=../agentd  # path to agentd repo checkout
 AGENTD_CONFIG=${AGENTD_ROOT}/config/agentd.toml
-MCP_INDEX_API_TOKEN=replace-with-a-long-random-secret
-MCP_SIDECAR_API_TOKEN=replace-with-a-long-random-secret
+MCP_INDEX_API_TOKEN=<generated>
+MCP_SIDECAR_API_TOKEN=<generated>
+PG_AUTH_GATEWAY_IDENTITY_SECRET=<generated>
 # Optional persistent VM overrides
 SMITH_EXECUTOR_VM_POOL_ENABLED=true
 SMITH_EXECUTOR_VM_METHOD=gondolin
@@ -253,7 +291,7 @@ SLACK_BOT_TOKEN=
 SLACK_APP_TOKEN=
 ```
 
-For non-development deployments, rotate all default passwords in `.env` and set strong `MCP_INDEX_API_TOKEN` and `MCP_SIDECAR_API_TOKEN` values.
+For customer-managed NATS, point `SMITH_NATS_URL` and `SMITH_NATS_DOCKER_URL` at your existing cluster and provision dedicated credentials with subject ACLs for Smith services.
 When `SMITH_EXECUTOR_VM_POOL_ENABLED=true` (or `executor.vm_pool.enabled=true` in `agentd.toml`), VM execution defaults to `gondolin` on macOS and `host` on other platforms (override with `SMITH_EXECUTOR_VM_METHOD`).
 
 ## Security defaults
@@ -265,9 +303,15 @@ Smith Core is designed for single-user, self-hosted deployments. Defaults are se
 - **Policy enforcement** — OPA policies govern what the agent can do
 - **mTLS gateway** — Envoy terminates TLS and forwards only explicit routes
 - **Loopback-bound host ports** — infrastructure ports bind to `127.0.0.1` by default
+- **Installer-generated local credentials** — `smith install` generates unique passwords/tokens for the local stack instead of relying on repo-shipped defaults
+- **Authenticated local NATS** — the bundled NATS server requires credentials generated into `.env`; customer-managed NATS should use dedicated users/accounts with subject ACLs
 - **Token-enforced MCP APIs** — `mcp-index` and `mcp-sidecar` require API tokens by default (including `/health`; opt-out only via explicit `*_ALLOW_UNAUTHENTICATED=true`)
+- **Verified stdio tool identity** — when `MCP_SIDECAR_IDENTITY_SECRET` is set, `mcp-sidecar` verifies the daemon-issued identity token and injects verified Smith user context into stdio MCP tool calls
+- **Signed Postgres identity binding** — the Postgres auth gateway accepts daemon-issued identity tokens and binds backend-local RLS context through a gatekeeper path instead of trusting caller-set session variables
 - **Signed webhook enforcement** — `smith-chat` webhook ingress rejects unsigned requests by default (`CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS=true`)
 - **Config-backed agentd startup** — `just run-agentd` uses committed config; insecure fallback is now dev-only via `just run-agentd-dev`
+
+Important: the shipped OPA/Envoy egress policy still defaults to broad outbound access for usability. The installer warns about this, but production deployments should narrow `infra/opa/policy/smith/egress/data.json` before trusting agents with sensitive data.
 
 ## License
 

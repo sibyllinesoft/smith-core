@@ -32,6 +32,11 @@ pub struct IdentityClaims {
     /// Smith agent ID this session is paired with
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    /// Resolved Smith user ID, if this principal is linked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smith_user_id: Option<String>,
+    /// Resolved Smith role used for server-side authorization.
+    pub smith_user_role: String,
     /// When this identity was issued (JWT `iat`)
     #[serde(rename = "iat")]
     pub issued_at: DateTime<Utc>,
@@ -47,6 +52,8 @@ impl IdentityClaims {
         session_key: &SessionKey,
         display_name: Option<String>,
         group_name: Option<String>,
+        smith_user_id: Option<String>,
+        smith_user_role: String,
         ttl: Duration,
     ) -> Self {
         let now = Utc::now();
@@ -63,6 +70,8 @@ impl IdentityClaims {
             group_name,
             display_name,
             agent_id: Some(pairing.agent_id.clone()),
+            smith_user_id,
+            smith_user_role,
             issued_at: now,
             expires_at: now + ttl,
         }
@@ -76,6 +85,8 @@ impl IdentityClaims {
         display_name: Option<String>,
         group_name: Option<String>,
         agent_id: Option<String>,
+        smith_user_id: Option<String>,
+        smith_user_role: String,
         ttl: Duration,
     ) -> Self {
         let now = Utc::now();
@@ -92,6 +103,8 @@ impl IdentityClaims {
             group_name,
             display_name,
             agent_id,
+            smith_user_id,
+            smith_user_role,
             issued_at: now,
             expires_at: now + ttl,
         }
@@ -146,6 +159,13 @@ impl IdentityClaims {
         if let Some(aid) = &self.agent_id {
             map.insert("x-oc-agent-id".to_string(), Value::String(aid.clone()));
         }
+        if let Some(user_id) = &self.smith_user_id {
+            map.insert("x-oc-smith-user-id".to_string(), Value::String(user_id.clone()));
+        }
+        map.insert(
+            "x-oc-smith-user-role".to_string(),
+            Value::String(self.smith_user_role.clone()),
+        );
         map
     }
 }
@@ -164,6 +184,9 @@ struct JwtClaims {
     display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    smith_user_id: Option<String>,
+    smith_user_role: String,
     iat: i64,
     exp: i64,
 }
@@ -178,6 +201,8 @@ impl From<&IdentityClaims> for JwtClaims {
             group_name: claims.group_name.clone(),
             display_name: claims.display_name.clone(),
             agent_id: claims.agent_id.clone(),
+            smith_user_id: claims.smith_user_id.clone(),
+            smith_user_role: claims.smith_user_role.clone(),
             iat: claims.issued_at.timestamp(),
             exp: claims.expires_at.timestamp(),
         }
@@ -194,6 +219,8 @@ impl From<JwtClaims> for IdentityClaims {
             group_name: claims.group_name,
             display_name: claims.display_name,
             agent_id: claims.agent_id,
+            smith_user_id: claims.smith_user_id,
+            smith_user_role: claims.smith_user_role,
             issued_at: DateTime::<Utc>::from_timestamp(claims.iat, 0).unwrap_or_else(Utc::now),
             expires_at: DateTime::<Utc>::from_timestamp(claims.exp, 0).unwrap_or_else(Utc::now),
         }
@@ -222,6 +249,8 @@ mod tests {
             Some("Alice".into()),
             None,
             Some("agent-1".into()),
+            Some("smith-user-1".into()),
+            "user".into(),
             Duration::hours(1),
         );
 
@@ -233,6 +262,8 @@ mod tests {
         assert_eq!(decoded.principal, "user42");
         assert_eq!(decoded.agent_id.as_deref(), Some("agent-1"));
         assert_eq!(decoded.display_name.as_deref(), Some("Alice"));
+        assert_eq!(decoded.smith_user_id.as_deref(), Some("smith-user-1"));
+        assert_eq!(decoded.smith_user_role, "user");
         assert_eq!(decoded.session, session_key.to_key_string());
     }
 
@@ -253,6 +284,8 @@ mod tests {
             Some("Bob".into()),
             Some("Dev Team".into()),
             Some("a".into()),
+            Some("smith-user-2".into()),
+            "admin".into(),
             Duration::hours(1),
         );
 
@@ -263,6 +296,8 @@ mod tests {
         assert_eq!(meta["x-oc-group-name"].as_str(), Some("Dev Team"));
         assert_eq!(meta["x-oc-display-name"].as_str(), Some("Bob"));
         assert_eq!(meta["x-oc-agent-id"].as_str(), Some("a"));
+        assert_eq!(meta["x-oc-smith-user-id"].as_str(), Some("smith-user-2"));
+        assert_eq!(meta["x-oc-smith-user-role"].as_str(), Some("admin"));
     }
 
     #[test]
@@ -282,6 +317,8 @@ mod tests {
             None,
             None,
             None,
+            None,
+            "guest".into(),
             Duration::hours(1),
         );
         // Backdate to make it expired

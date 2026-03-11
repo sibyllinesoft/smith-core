@@ -4,11 +4,13 @@
 # Output: infra/envoy/certs/generated/{ca,server,client}.{crt,key}
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 OUT="$SCRIPT_DIR/generated"
 DAYS=825
 FORCE="${SMITH_FORCE_CERTS:-0}"
+P12_PASS_FILE="$OUT/client.p12.password"
 
 required=(ca.crt ca.key server.crt server.key client.crt client.key)
 if [[ "$FORCE" != "1" ]]; then
@@ -75,11 +77,13 @@ openssl x509 -req -sha256 -in "$OUT/client.csr" \
   -out "$OUT/client.crt" -days "$DAYS"
 
 echo "==> Generating client PKCS#12 bundle (for browser import)"
+CLIENT_P12_PASSWORD="${SMITH_CLIENT_P12_PASSWORD:-$(openssl rand -hex 16)}"
+printf '%s\n' "$CLIENT_P12_PASSWORD" > "$P12_PASS_FILE"
 openssl pkcs12 -export -out "$OUT/client.p12" \
   -inkey "$OUT/client.key" -in "$OUT/client.crt" \
-  -certfile "$OUT/ca.crt" -passout pass:smith-dev
+  -certfile "$OUT/ca.crt" -passout pass:"$CLIENT_P12_PASSWORD"
 
-chmod 644 "$OUT"/*.key
+chmod 600 "$OUT"/*.key "$P12_PASS_FILE"
 rm -f "$OUT"/*.csr "$OUT"/*.ext "$OUT"/*.srl
 
 echo "==> Certificates written to $OUT"

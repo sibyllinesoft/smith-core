@@ -22,9 +22,10 @@ skip() { echo "[SKIP] $1"; ((skipped++)); }
 if [[ -f .env ]]; then
   mcp_index_token=$(grep -E '^MCP_INDEX_API_TOKEN=' .env | head -1 | cut -d= -f2-)
   mcp_sidecar_token=$(grep -E '^MCP_SIDECAR_API_TOKEN=' .env | head -1 | cut -d= -f2-)
+  nats_url=$(grep -E '^SMITH_NATS_URL=' .env | head -1 | cut -d= -f2-)
 
   env_ok=true
-  for token_name in MCP_INDEX_API_TOKEN MCP_SIDECAR_API_TOKEN; do
+  for token_name in MCP_INDEX_API_TOKEN MCP_SIDECAR_API_TOKEN POSTGRES_PASSWORD SMITH_APP_PASSWORD SMITH_READONLY_PASSWORD SMITH_GATEKEEPER_PASSWORD SMITH_NATS_PASSWORD; do
     val=$(grep -E "^${token_name}=" .env | head -1 | cut -d= -f2-)
     val="${val//\"/}"
     val="${val//\'/}"
@@ -34,9 +35,15 @@ if [[ -f .env ]]; then
   done
 
   if $env_ok; then
-    pass ".env exists with non-placeholder MCP tokens"
+    pass ".env exists with generated secrets and non-placeholder MCP tokens"
   else
-    fail ".env has missing or placeholder MCP_INDEX_API_TOKEN / MCP_SIDECAR_API_TOKEN"
+    fail ".env has missing or placeholder generated secrets / API tokens"
+  fi
+
+  if [[ "$nats_url" == nats://*@* ]]; then
+    pass "SMITH_NATS_URL includes credentials"
+  else
+    fail "SMITH_NATS_URL is missing embedded credentials"
   fi
 else
   fail ".env file does not exist"

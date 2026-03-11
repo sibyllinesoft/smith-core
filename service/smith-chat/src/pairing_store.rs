@@ -47,6 +47,23 @@ pub struct Pairing {
     pub metadata: serde_json::Value,
 }
 
+/// One-time pairing token payload. Invitations may pre-authorize a specific
+/// Smith user account to claim the linking.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingCodePayload {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_user_id: Option<String>,
+}
+
+/// Result of redeeming a one-time pairing token.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PairingRedemption {
+    pub pairing: Pairing,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invited_user_id: Option<String>,
+}
+
 /// Redis-backed store for managing pairing codes and active pairings,
 /// with Postgres as the durable backend. Redis is the fast-path cache;
 /// Postgres is the source of truth for redeemed pairings.
@@ -87,10 +104,28 @@ impl PairingStore {
 
     /// Generate a short alphanumeric pairing code and store it mapped to `agent_id`.
     pub async fn create_code(&self, agent_id: &str) -> Result<String> {
+        self.create_payload(PairingCodePayload {
+            agent_id: agent_id.to_string(),
+            invited_user_id: None,
+        })
+        .await
+    }
+
+    /// Generate a short-lived invitation token bound to a specific Smith user.
+    pub async fn create_invitation(&self, agent_id: &str, user_id: &str) -> Result<String> {
+        self.create_payload(PairingCodePayload {
+            agent_id: agent_id.to_string(),
+            invited_user_id: Some(user_id.to_string()),
+        })
+        .await
+    }
+
+    async fn create_payload(&self, payload: PairingCodePayload) -> Result<String> {
         let code = generate_code();
         let key = Self::code_key(&code);
         let mut conn = self.manager.clone();
-        conn.set_ex::<_, _, ()>(&key, agent_id, self.code_ttl_secs)
+        let payload = serde_json::to_string(&payload)?;
+        conn.set_ex::<_, _, ()>(&key, payload, self.code_ttl_secs)
             .await
             .context("failed to store pairing code in redis")?;
         Ok(code)
@@ -104,18 +139,26 @@ impl PairingStore {
         platform: ChatPlatform,
         user_id: &str,
         channel_id: &str,
-    ) -> Result<Option<Pairing>> {
+    ) -> Result<Option<PairingRedemption>> {
         let code_key = Self::code_key(code);
         let mut conn = self.manager.clone();
 
-        let agent_id: Option<String> = conn
+        let raw_payload: Option<String> = conn
             .get(&code_key)
             .await
             .context("failed to read pairing code from redis")?;
 
-        let Some(agent_id) = agent_id else {
+        let Some(raw_payload) = raw_payload else {
             return Ok(None);
         };
+
+        // Support older agent_id-only pairing-code payloads during rollout.
+        let payload = serde_json::from_str::<PairingCodePayload>(&raw_payload).unwrap_or_else(
+            |_| PairingCodePayload {
+                agent_id: raw_payload,
+                invited_user_id: None,
+            },
+        );
 
         // Delete the code so it can't be reused
         conn.del::<_, ()>(&code_key)
@@ -125,7 +168,7 @@ impl PairingStore {
         let now = Utc::now();
         let pairing = Pairing {
             code: code.to_string(),
-            agent_id,
+            agent_id: payload.agent_id.clone(),
             platform,
             user_id: user_id.to_string(),
             channel_id: channel_id.to_string(),
@@ -135,8 +178,8 @@ impl PairingStore {
         };
 
         let active_key = Self::active_key(platform, user_id);
-        let payload = serde_json::to_string(&pairing)?;
-        conn.set_ex::<_, _, ()>(&active_key, &payload, self.pairing_ttl_secs)
+        let active_payload = serde_json::to_string(&pairing)?;
+        conn.set_ex::<_, _, ()>(&active_key, &active_payload, self.pairing_ttl_secs)
             .await
             .context("failed to store active pairing")?;
 
@@ -149,7 +192,10 @@ impl PairingStore {
             tracing::warn!(error = ?err, "Failed to persist pairing to Postgres (Redis cache still set)");
         }
 
-        Ok(Some(pairing))
+        Ok(Some(PairingRedemption {
+            pairing,
+            invited_user_id: payload.invited_user_id,
+        }))
     }
 
     /// Look up an existing active pairing for a platform user.

@@ -317,6 +317,8 @@ async fn whatsapp_verify(
 #[derive(Deserialize)]
 struct CreatePairingCodeRequest {
     agent_id: String,
+    #[serde(default)]
+    user_id: Option<String>,
 }
 
 async fn create_pairing_code(
@@ -343,24 +345,35 @@ async fn create_pairing_code(
         }
     }
 
-    match state.pairing_store.create_code(&body.agent_id).await {
+    let result = if let Some(user_id) = body.user_id.as_deref() {
+        state.pairing_store.create_invitation(&body.agent_id, user_id).await
+    } else {
+        state.pairing_store.create_code(&body.agent_id).await
+    };
+
+    match result {
         Ok(code) => {
-            info!(agent_id = %body.agent_id, "Pairing code created via admin API");
+            info!(
+                agent_id = %body.agent_id,
+                user_id = body.user_id.as_deref().unwrap_or(""),
+                "Pairing token created via admin API"
+            );
             (
                 StatusCode::CREATED,
                 Json(json!({
                     "code": code,
                     "agent_id": body.agent_id,
+                    "user_id": body.user_id,
                     "expires_in": state.pairing_store.code_ttl_secs,
                 })),
             )
                 .into_response()
         }
         Err(err) => {
-            error!(error = ?err, "Failed to create pairing code");
+            error!(error = ?err, "Failed to create pairing token");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "failed to create pairing code"})),
+                Json(json!({"error": "failed to create pairing token"})),
             )
                 .into_response()
         }

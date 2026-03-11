@@ -104,11 +104,15 @@ npm-install:
 
 # Run the MCP shim (pass MCP server command after --)
 run-mcp-sidecar *args:
-    cargo run -p mcp-sidecar -- {{args}}
+    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-tool-gateway}/Cargo.toml -p mcp-sidecar -- {{args}}
 
 # Run the MCP index
 run-mcp-index:
-    cargo run -p mcp-index
+    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-tool-gateway}/Cargo.toml -p mcp-index
+
+# Run the Postgres auth gateway
+run-pg-auth-gateway:
+    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-tool-gateway}/Cargo.toml -p pg-auth-gateway
 
 # Run agentd
 run-agentd:
@@ -176,7 +180,7 @@ run-imessage-gateway:
 
 # Run the agentic installer
 install *args:
-    cd installer && npm run build && bash -lc 'set -- {{args}}; if [ "${1:-}" = "--" ]; then shift; fi; node dist/cli.js "$@"'
+    cd installer && npm run build && bash -lc 'set -- {{args}}; if [ "${1:-}" = "--" ]; then shift; fi; node dist/smith.js install "$@"'
 
 # ── Full Stack ────────────────────────────────────────────────────────────
 

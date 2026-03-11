@@ -18,7 +18,7 @@ receivers:
     config:
       scrape_configs:
         - job_name: envoy-gateway
-          scrape_interval: 15s
+          scrape_interval: 60s
           metrics_path: /stats/prometheus
           static_configs:
             - targets: ['envoy:9901']

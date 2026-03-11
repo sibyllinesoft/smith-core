@@ -2,15 +2,22 @@
 
 import { copyFileSync, createWriteStream, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { resolve, join } from "path";
-import { execFileSync } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { pipeline } from "stream/promises";
 import { randomBytes } from "crypto";
 import { tmpdir, homedir } from "os";
 import { createInterface } from "readline/promises";
 import { createServer } from "net";
+import { pathToFileURL } from "url";
 import { createInstallerSession } from "./agents.js";
 import { parseArgs, findSmithRoot, evaluateInstallerSecurity, readSmithConfig, writeSmithConfig } from "./lib.js";
 import type { CliArgs } from "./lib.js";
+import {
+  buildInstallerInitialMessage,
+  normalizeInstallerHarness,
+  writeInstallerHarnessContext,
+} from "./harness.js";
+import type { InstallerHarness } from "./harness.js";
 
 type CommandSpec = {
   command: string;
@@ -22,7 +29,7 @@ const DEFAULT_REPO = "sibyllinesoft/smith-core";
 async function resolveLatestTag(repo: string): Promise<string> {
   const resp = await fetch(
     `https://api.github.com/repos/${repo}/tags?per_page=100`,
-    { headers: { "User-Agent": "smith-installer" } }
+    { headers: { "User-Agent": "smith" } }
   );
   if (!resp.ok) {
     throw new Error(`Failed to fetch tags from ${repo}: ${resp.status}`);
@@ -258,6 +265,170 @@ function checkPortAvailable(port: number, host = "127.0.0.1"): Promise<boolean> 
   });
 }
 
+const HARNESS_CHOICES: Array<{
+  key: InstallerHarness;
+  label: string;
+  command?: string;
+  description: string;
+}> = [
+  {
+    key: "pi",
+    label: "pi",
+    description: "Built-in default with native installer skills and provider/model selection.",
+  },
+  {
+    key: "codex",
+    label: "codex",
+    command: "codex",
+    description: "Reuse an existing Codex login/session and pass installer context through a generated context file.",
+  },
+  {
+    key: "claude",
+    label: "claude code",
+    command: "claude",
+    description: "Use Claude Code with the shared installer context and initial task.",
+  },
+  {
+    key: "opencode",
+    label: "opencode",
+    command: "opencode",
+    description: "Use opencode with the shared installer context and initial task.",
+  },
+];
+
+function harnessCommand(harness: InstallerHarness): string | null {
+  return HARNESS_CHOICES.find((item) => item.key === harness)?.command ?? null;
+}
+
+function isHarnessAvailable(harness: InstallerHarness): boolean {
+  const command = harnessCommand(harness);
+  return command ? isCommandAvailable(command) : true;
+}
+
+async function promptHarnessChoice(preselected?: string): Promise<InstallerHarness> {
+  const normalized = normalizeInstallerHarness(preselected);
+  if (normalized) {
+    if (!isHarnessAvailable(normalized)) {
+      const command = harnessCommand(normalized) ?? normalized;
+      console.error(`Selected harness '${normalized}' is not available. Install '${command}' or choose another harness.`);
+      process.exit(1);
+    }
+    return normalized;
+  }
+
+  console.log();
+  console.log("Select installer harness:");
+  HARNESS_CHOICES.forEach((choice, index) => {
+    const available = isHarnessAvailable(choice.key);
+    const suffix = available ? "" : " [not installed]";
+    const recommended = choice.key === "pi" ? " (default)" : "";
+    console.log(`  ${index + 1}. ${choice.label}${recommended}${suffix}`);
+    console.log(`     ${choice.description}`);
+  });
+  console.log();
+
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = (await rl.question("Harness [1]: ")).trim();
+    if (!answer) {
+      return "pi";
+    }
+    const byIndex = Number(answer);
+    const selected =
+      Number.isInteger(byIndex) && byIndex >= 1 && byIndex <= HARNESS_CHOICES.length
+        ? HARNESS_CHOICES[byIndex - 1]?.key
+        : normalizeInstallerHarness(answer);
+
+    if (!selected) {
+      console.error(`Unknown harness '${answer}'. Use pi, codex, claude, or opencode.`);
+      process.exit(1);
+    }
+    if (!isHarnessAvailable(selected)) {
+      const command = harnessCommand(selected) ?? selected;
+      console.error(`Harness '${selected}' is not available. Install '${command}' first.`);
+      process.exit(1);
+    }
+    return selected;
+  } finally {
+    rl.close();
+  }
+}
+
+function buildExternalHarnessPrompt(contextPath: string, initialMessage: string): string {
+  return [
+    `Read the installer context file at ${contextPath} before taking any action.`,
+    "Treat that file as the authoritative installer instructions, workflow, and skill set for this session.",
+    "",
+    initialMessage,
+  ].join("\n");
+}
+
+async function runExternalHarness(
+  harness: Exclude<InstallerHarness, "pi">,
+  smithRoot: string,
+  args: CliArgs,
+): Promise<void> {
+  const contextPath = writeInstallerHarnessContext({
+    smithRoot,
+    provider: args.provider,
+    model: args.model,
+    thinkingLevel: args.thinkingLevel,
+    step: args.step,
+    force: args.force,
+  });
+  const initialMessage = buildInstallerInitialMessage(args.step);
+  const prompt = buildExternalHarnessPrompt(contextPath, initialMessage);
+
+  let command: string;
+  let commandArgs: string[];
+  switch (harness) {
+    case "codex":
+      command = "codex";
+      commandArgs = [];
+      if (args.model) {
+        commandArgs.push("--model", args.model);
+      }
+      commandArgs.push(prompt);
+      break;
+    case "claude":
+      command = "claude";
+      commandArgs = [];
+      if (args.model) {
+        commandArgs.push("--model", args.model);
+      }
+      commandArgs.push("--append-system-prompt", "Follow the Smith installer context file and repository-local instructions exactly.");
+      commandArgs.push(prompt);
+      break;
+    case "opencode":
+      command = "opencode";
+      commandArgs = [".", "--prompt", prompt];
+      if (args.model) {
+        commandArgs.push("--model", args.model);
+      }
+      break;
+  }
+
+  await new Promise<void>((resolvePromise, reject) => {
+    const child = spawn(command, commandArgs, {
+      cwd: smithRoot,
+      stdio: "inherit",
+      env: process.env,
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (signal) {
+        reject(new Error(`${command} exited due to signal ${signal}`));
+        return;
+      }
+      if (code && code !== 0) {
+        reject(new Error(`${command} exited with status ${code}`));
+        return;
+      }
+      resolvePromise();
+    });
+  });
+}
+
 async function runPreflightChecks(): Promise<void> {
   const errors: string[] = [];
 
@@ -429,13 +600,47 @@ function generateHexSecret(bytes = 24): string {
   return randomBytes(bytes).toString("hex");
 }
 
+function buildPostgresUrl(user: string, password: string, host: string): string {
+  return `postgresql://${user}:${password}@${host}:5432/smith`;
+}
+
+function buildNatsUrl(user: string, password: string, host: string): string {
+  return `nats://${user}:${password}@${host}:4222`;
+}
+
+function isLikelyPlaceholderValue(value: string): boolean {
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    return true;
+  }
+  if (normalized.startsWith("${") || normalized.startsWith("$(")) {
+    return true;
+  }
+  const lower = normalized.toLowerCase();
+  return (
+    lower.startsWith("change-me") ||
+    lower.startsWith("changeme") ||
+    lower.startsWith("replace-with-")
+  );
+}
+
+function isLikelyPlaceholderUrl(value: string, defaults: string[]): boolean {
+  const normalized = value.trim();
+  if (isLikelyPlaceholderValue(normalized)) {
+    return true;
+  }
+  return defaults.includes(normalized);
+}
+
 function ensureSecurityDefaults(smithRoot: string): void {
+  const envAlreadyExists = existsSync(join(smithRoot, ".env"));
   const envPath = ensureEnvFile(smithRoot);
   if (!envPath) return;
 
   const vars = parseEnvFile(envPath);
   const generated: string[] = [];
   const configured: string[] = [];
+  const manualRotation: string[] = [];
 
   const ensureToken = (
     key: string,
@@ -460,36 +665,99 @@ function ensureSecurityDefaults(smithRoot: string): void {
     }
   };
 
-  // Database / service password hardening — replace known weak defaults
+  const ensureRenderedValue = (
+    key: string,
+    value: string,
+    defaults: string[] = []
+  ): void => {
+    const current = (vars[key] ?? "").trim();
+    if (isLikelyPlaceholderUrl(current, defaults)) {
+      upsertEnvValue(envPath, key, value);
+      vars[key] = value;
+      configured.push(key);
+    }
+  };
+
+  // Stateful service passwords: generate on new installs, but do not silently
+  // rotate existing credentials because persisted data volumes would keep the
+  // old values until the operator performs a coordinated rotation.
   const weakPasswords: Array<[string, string[]]> = [
     ["POSTGRES_PASSWORD", ["smith-dev", "postgres", "password", "changeme"]],
+    ["SMITH_APP_PASSWORD", ["smith-app-dev", "smith_app", "password", "changeme"]],
+    ["SMITH_READONLY_PASSWORD", ["smith-readonly-dev", "smith_readonly", "password", "changeme"]],
+    ["SMITH_GATEKEEPER_PASSWORD", ["smith-gatekeeper-dev", "smith_gatekeeper", "password", "changeme"]],
     ["CLICKHOUSE_PASSWORD", ["observability-dev", "clickhouse", "password", "changeme"]],
     ["GRAFANA_ADMIN_PASSWORD", ["admin", "grafana", "password", "changeme"]],
   ];
 
   for (const [key, weakValues] of weakPasswords) {
     const current = (vars[key] ?? "").trim();
-    if (current.length === 0 || weakValues.includes(current)) {
+    if (current.length === 0) {
       const newPassword = generateHexSecret(16); // 32-char hex
       upsertEnvValue(envPath, key, newPassword);
-
-      // Update connection strings that embed the old password
-      if (key === "POSTGRES_PASSWORD" && current.length > 0) {
-        const connKeys = ["SMITH_DATABASE_URL", "PI_BRIDGE_PG"];
-        for (const connKey of connKeys) {
-          const connStr = (vars[connKey] ?? "").trim();
-          if (connStr && connStr.includes(`:${current}@`)) {
-            const updated = connStr.replace(`:${current}@`, `:${newPassword}@`);
-            upsertEnvValue(envPath, connKey, updated);
-            vars[connKey] = updated;
-          }
-        }
-      }
-
       vars[key] = newPassword;
       generated.push(key);
+      continue;
+    }
+
+    if (!envAlreadyExists && weakValues.includes(current)) {
+      const newPassword = generateHexSecret(16); // 32-char hex
+      upsertEnvValue(envPath, key, newPassword);
+      vars[key] = newPassword;
+      generated.push(key);
+      continue;
+    }
+
+    if (envAlreadyExists && weakValues.includes(current)) {
+      manualRotation.push(key);
     }
   }
+
+  ensureValue("GRAFANA_ADMIN_USER", "admin");
+  ensureValue("SMITH_NATS_USERNAME", "smith");
+  ensureToken("SMITH_NATS_PASSWORD", 18, 24);
+
+  const postgresPassword = (vars.POSTGRES_PASSWORD ?? "").trim();
+  const appPassword = (vars.SMITH_APP_PASSWORD ?? "").trim();
+  const readonlyPassword = (vars.SMITH_READONLY_PASSWORD ?? "").trim();
+  const gatekeeperPassword = (vars.SMITH_GATEKEEPER_PASSWORD ?? "").trim();
+  const natsUsername = (vars.SMITH_NATS_USERNAME ?? "smith").trim();
+  const natsPassword = (vars.SMITH_NATS_PASSWORD ?? "").trim();
+
+  ensureRenderedValue("SMITH_DATABASE_URL", buildPostgresUrl("smith", postgresPassword, "localhost"), [
+    "postgresql://smith:smith-dev@localhost:5432/smith",
+  ]);
+  ensureRenderedValue("PI_BRIDGE_PG", buildPostgresUrl("smith", postgresPassword, "localhost"), [
+    "postgresql://smith:smith-dev@localhost:5432/smith",
+  ]);
+  ensureRenderedValue("PI_BRIDGE_PG_APP", buildPostgresUrl("smith_app", appPassword, "localhost"), [
+    "postgresql://smith_app:smith-app-dev@localhost:5432/smith",
+  ]);
+  ensureRenderedValue(
+    "PI_BRIDGE_PG_GATEKEEPER",
+    buildPostgresUrl("smith_gatekeeper", gatekeeperPassword, "localhost"),
+    ["postgresql://smith_gatekeeper:smith-gatekeeper-dev@localhost:5432/smith"]
+  );
+  ensureRenderedValue("SMITH_CRON_PG", buildPostgresUrl("smith_app", appPassword, "localhost"), [
+    "postgresql://smith_app:smith-app-dev@localhost:5432/smith",
+  ]);
+  ensureRenderedValue(
+    "SMITH_CRON_PG_GATEKEEPER",
+    buildPostgresUrl("smith_gatekeeper", gatekeeperPassword, "localhost"),
+    ["postgresql://smith_gatekeeper:smith-gatekeeper-dev@localhost:5432/smith"]
+  );
+
+  ensureRenderedValue("SMITH_NATS_URL", buildNatsUrl(natsUsername, natsPassword, "127.0.0.1"), [
+    "nats://127.0.0.1:4222",
+    "nats://localhost:4222",
+  ]);
+  ensureRenderedValue("NATS_URL", buildNatsUrl(natsUsername, natsPassword, "127.0.0.1"), [
+    "nats://127.0.0.1:4222",
+    "nats://localhost:4222",
+  ]);
+  ensureRenderedValue("SMITH_NATS_DOCKER_URL", buildNatsUrl(natsUsername, natsPassword, "nats"), [
+    "nats://nats:4222",
+  ]);
 
   // MCP index / sidecar API hardening
   ensureToken("MCP_INDEX_API_TOKEN", 24, 24);
@@ -498,6 +766,7 @@ function ensureSecurityDefaults(smithRoot: string): void {
   ensureValue("MCP_SIDECAR_ALLOW_UNAUTHENTICATED", "false");
 
   // Chat webhook hardening defaults
+  ensureToken("CHAT_BRIDGE_IDENTITY_SECRET", 24, 24);
   ensureValue("CHAT_BRIDGE_REQUIRE_SIGNED_WEBHOOKS", "true");
   ensureValue("CHAT_BRIDGE_GITHUB_INGEST_SUBJECT", "smith.orch.ingest.github");
   ensureToken("CHAT_BRIDGE_ADMIN_TOKEN", 24, 24);
@@ -505,6 +774,17 @@ function ensureSecurityDefaults(smithRoot: string): void {
   ensureToken("CHAT_BRIDGE_TELEGRAM_WEBHOOK_SECRET", 16, 20);
   ensureToken("CHAT_BRIDGE_WHATSAPP_VERIFY_TOKEN", 16, 20);
   ensureToken("CHAT_BRIDGE_WHATSAPP_APP_SECRET", 24, 24);
+
+  const sharedIdentitySecret = (vars.CHAT_BRIDGE_IDENTITY_SECRET ?? "").trim();
+  for (const key of [
+    "PI_BRIDGE_IDENTITY_SECRET",
+    "MCP_INDEX_IDENTITY_SECRET",
+    "MCP_SIDECAR_IDENTITY_SECRET",
+    "PG_AUTH_GATEWAY_IDENTITY_SECRET",
+    "SMITH_CRON_IDENTITY_SECRET",
+  ]) {
+    ensureRenderedValue(key, sharedIdentitySecret);
+  }
 
   if (generated.length > 0 || configured.length > 0) {
     const details = [
@@ -518,6 +798,15 @@ function ensureSecurityDefaults(smithRoot: string): void {
       .filter(Boolean)
       .join("; ");
     console.log(`[installer] Applied security defaults in .env (${details})`);
+  }
+
+  if (manualRotation.length > 0) {
+    console.warn(
+      `[installer] Existing weak stateful credentials were left unchanged to avoid breaking persisted volumes: ${manualRotation.join(", ")}`
+    );
+    console.warn(
+      "[installer] Rotate them explicitly during a coordinated maintenance window, then restart the affected services."
+    );
   }
 }
 
@@ -813,12 +1102,13 @@ function printPostInstallSummary(smithRoot: string): void {
 }
 
 function printHelp(): void {
-  console.log(`smith-install — AI-guided Smith Core installer
+  console.log(`smith install — AI-guided Smith Core installer
 
-Usage: smith-install [options]
+Usage: smith install [options]
 
 Options:
   --non-interactive    Run bootstrap commands directly (no TUI)
+  --harness <name>     Agent harness: pi (default), codex, claude, opencode
   --provider <name>    LLM provider (default: anthropic)
   --model <id>         Model ID (default: claude-sonnet-4-5-20250929)
   --thinking <level>   Thinking level: none, low, medium, high (default: medium)
@@ -829,10 +1119,10 @@ Options:
   --help               Show this help`);
 }
 
-async function main(): Promise<void> {
+export async function runInstallerCli(argv: string[] = process.argv): Promise<void> {
   let args: CliArgs;
   try {
-    args = parseArgs(process.argv);
+    args = parseArgs(argv);
   } catch (err) {
     console.error((err as Error).message);
     process.exit(1);
@@ -897,6 +1187,21 @@ async function main(): Promise<void> {
     return;
   }
 
+  const harness = process.stdin.isTTY
+    ? await promptHarnessChoice(args.harness)
+    : (normalizeInstallerHarness(args.harness) ?? "pi");
+
+  if (!process.stdin.isTTY && args.harness && !isHarnessAvailable(harness)) {
+    const command = harnessCommand(harness) ?? harness;
+    console.error(`Harness '${harness}' is not available. Install '${command}' first.`);
+    process.exit(1);
+  }
+
+  if (harness !== "pi") {
+    await runExternalHarness(harness, smithRoot, args);
+    return;
+  }
+
   // Interactive mode: ensure API key is available, then create pi-agent session
   await ensureProviderApiKey(args.provider);
 
@@ -916,14 +1221,7 @@ async function main(): Promise<void> {
     ),
   });
 
-  const configSteps = ["configure-policy", "policy"];
-  const isConfigStep = args.step && configSteps.includes(args.step.toLowerCase());
-
-  const initialMessage = isConfigStep
-    ? `Inspect and configure OPA security policies for this smith-core environment (step '${args.step}'). Show current policy state and tool-access rules.`
-    : args.step
-      ? `Bootstrap this smith-core environment and execute step '${args.step}'.`
-      : "Bootstrap this smith-core development environment. Ensure Docker services are up, Rust workspaces build, Node workspaces are installed, and report any fixes required.";
+  const initialMessage = buildInstallerInitialMessage(args.step);
 
   if (process.stdin.isTTY) {
     // Interactive TUI with auto-start prompt.
@@ -935,7 +1233,13 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+const isDirectExecution =
+  process.argv[1] != null &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isDirectExecution) {
+  runInstallerCli().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}

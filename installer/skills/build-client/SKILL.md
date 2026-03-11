@@ -28,7 +28,7 @@ This skill builds TypeScript/Node workspace packages used by Smith Core.
 ## Expected Output
 
 - `npm install` completes without fatal errors.
-- Build runs for `@smith/pi-bridge` and `@sibyllinesoft/smith-installer`.
+- Build runs for `@smith/pi-bridge` and `@sibyllinesoft/smith`.
 
 ## Reading Results
 

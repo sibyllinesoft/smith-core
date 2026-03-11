@@ -166,7 +166,7 @@ pub struct Cli {
     #[arg(
         long,
         env = "DATABASE_URL",
-        default_value = "postgresql://smith:smith-dev@localhost:5432/smith"
+        default_value = "postgresql://smith:__set_via_env__@localhost:5432/smith"
     )]
     database_url: String,
 
@@ -522,44 +522,41 @@ async fn process_envelope(state: Arc<AppState>, envelope: BridgeMessageEnvelope)
             {
                 Ok(Some(pairing)) => {
                     info!(
-                        agent_id = %pairing.agent_id,
+                        agent_id = %pairing.pairing.agent_id,
                         sender_id = %envelope.sender.id,
                         "Pairing code redeemed successfully"
                     );
 
-                    // Auto-create user identity so pi-bridge resolves this
-                    // user with proper role/tool access on subsequent turns.
-                    let username = envelope
-                        .sender
-                        .username
-                        .as_deref()
-                        .unwrap_or(&envelope.sender.id);
-                    let display_name = envelope.sender.display_name.as_deref().unwrap_or(username);
-                    match ensure_user_identity(
+                    if let Err(err) = claim_user_identity(
                         &state.pg_pool,
                         &envelope.platform,
                         &envelope.sender.id,
-                        username,
-                        display_name,
+                        envelope.sender.display_name.as_deref(),
+                        envelope.sender.username.as_deref(),
+                        pairing.invited_user_id.as_deref(),
                     )
-                    .await
-                    {
-                        Ok(role) => info!(
-                            platform = %envelope.platform,
-                            sender_id = %envelope.sender.id,
-                            role,
-                            "User identity linked on pairing"
-                        ),
-                        Err(err) => warn!(
-                            error = ?err,
-                            "Failed to auto-create user identity on pairing"
-                        ),
+                    .await {
+                        warn!(error = ?err, "Rejecting pairing because identity claim failed");
+                        let _ = state.pairing_store.revoke(platform, &envelope.sender.id).await;
+                        send_reply(
+                            &state,
+                            &envelope,
+                            "Pairing failed because the invitation could not be claimed.",
+                        )
+                        .await?;
+                        return Ok(());
                     }
+                    info!(
+                        platform = %envelope.platform,
+                        sender_id = %envelope.sender.id,
+                        invited_user_id = pairing.invited_user_id.as_deref().unwrap_or(""),
+                        "User identity linked on pairing"
+                    );
 
                     send_reply(
                         &state,
                         &envelope,
-                        &format!("Paired successfully with agent `{}`.", pairing.agent_id),
+                        &format!("Paired successfully with agent `{}`.", pairing.pairing.agent_id),
                     )
                     .await?;
                     return Ok(());
@@ -835,6 +832,7 @@ impl ThreadStore {
             &envelope.team_id,
             &envelope.channel_id,
             &envelope.thread_root,
+            &envelope.sender.id,
         )
         .await
     }
@@ -845,8 +843,9 @@ impl ThreadStore {
         team_id: &str,
         channel_id: &str,
         thread_root: &str,
+        sender_id: &str,
     ) -> Result<Option<ThreadRecord>> {
-        let key = Self::key(platform, team_id, channel_id, thread_root);
+        let key = Self::key(platform, team_id, channel_id, thread_root, sender_id);
         let mut conn = self.manager.clone();
         let raw: Option<String> = conn
             .get(&key)
@@ -867,6 +866,7 @@ impl ThreadStore {
             &record.team_id,
             &record.channel_id,
             &record.thread_root,
+            &record.session_sender_id,
         );
         let payload = serde_json::to_string(record)?;
         let mut conn = self.manager.clone();
@@ -876,8 +876,14 @@ impl ThreadStore {
         Ok(())
     }
 
-    fn key(platform: &str, team_id: &str, channel_id: &str, thread_root: &str) -> String {
-        format!("chatbridge:thread:{platform}:{team_id}:{channel_id}:{thread_root}")
+    fn key(
+        platform: &str,
+        team_id: &str,
+        channel_id: &str,
+        thread_root: &str,
+        sender_id: &str,
+    ) -> String {
+        format!("chatbridge:thread:{platform}:{team_id}:{channel_id}:{thread_root}:{sender_id}")
     }
 }
 
@@ -887,6 +893,7 @@ struct ThreadRecord {
     team_id: String,
     channel_id: String,
     thread_root: String,
+    session_sender_id: String,
     last_post_id: String,
     last_post_at: i64,
     last_sender_id: String,
@@ -906,6 +913,7 @@ impl ThreadRecord {
             team_id: envelope.team_id.clone(),
             channel_id: envelope.channel_id.clone(),
             thread_root: envelope.thread_root.clone(),
+            session_sender_id: envelope.sender.id.clone(),
             last_post_id: envelope.post_id.clone(),
             last_post_at: envelope.timestamp,
             last_sender_id: envelope.sender.id.clone(),
@@ -978,23 +986,25 @@ async fn fetch_max_concurrent_sessions(pool: &Pool, agent_id: &str) -> u32 {
     }
 }
 
-/// Ensure a `users` + `user_identities` row exists for this platform user.
-/// If the identity already exists, returns the existing role.
-/// Otherwise creates a new user with role "user" and links the identity.
-/// Returns the user's role on success.
-async fn ensure_user_identity(
+/// Claim or create the Smith account linked to a chat-platform identity.
+///
+/// Invitations may pre-authorize a specific existing Smith user to claim a
+/// platform identity. Unbound pairing codes always create a fresh low-privilege
+/// Smith user instead of linking by username.
+async fn claim_user_identity(
     pool: &Pool,
     platform: &str,
     platform_user_id: &str,
-    username: &str,
-    display_name: &str,
+    display_name: Option<&str>,
+    platform_username: Option<&str>,
+    invited_user_id: Option<&str>,
 ) -> Result<String> {
     let client = pool.get().await.context("pool connection")?;
 
     // Check if identity already exists
     let existing = client
         .query_opt(
-            "SELECT u.role FROM users u
+            "SELECT u.id, u.role FROM users u
              JOIN user_identities ui ON ui.user_id = u.id
              WHERE ui.platform = $1 AND ui.platform_user_id = $2",
             &[&platform, &platform_user_id],
@@ -1002,29 +1012,45 @@ async fn ensure_user_identity(
         .await?;
 
     if let Some(row) = existing {
+        if let Some(expected_user_id) = invited_user_id {
+            let existing_user_id: String = row.get("id");
+            if existing_user_id != expected_user_id {
+                anyhow::bail!(
+                    "identity {}:{} is already linked to a different user",
+                    platform,
+                    platform_user_id
+                );
+            }
+        }
         return Ok(row.get::<_, String>("role"));
     }
 
-    // Check if a user with this username already exists — if so, link
-    // the identity to them rather than creating a duplicate account.
-    // This handles the common case where the admin pre-created the user.
-    let existing_user = client
-        .query_opt(
-            "SELECT id, role FROM users WHERE username = $1 AND active = true",
-            &[&username],
-        )
-        .await?;
+    let fallback_display_name = display_name
+        .filter(|value| !value.trim().is_empty())
+        .or(platform_username.filter(|value| !value.trim().is_empty()))
+        .unwrap_or(platform_user_id);
 
-    let (final_user_id, role) = if let Some(row) = existing_user {
+    let (final_user_id, role) = if let Some(user_id) = invited_user_id {
+        let invited_user = client
+            .query_opt(
+                "SELECT id, role FROM users WHERE id = $1 AND active = true",
+                &[&user_id],
+            )
+            .await?;
+
+        let Some(row) = invited_user else {
+            anyhow::bail!("invited user {user_id} not found or inactive");
+        };
+
         (row.get::<_, String>("id"), row.get::<_, String>("role"))
     } else {
-        // Create a new user with "user" role.
         let new_id = Uuid::new_v4().to_string();
+        let username = format!("{platform}-{}", Uuid::new_v4().simple());
         client
             .execute(
                 "INSERT INTO users (id, username, display_name, role)
                  VALUES ($1, $2, $3, 'user')",
-                &[&new_id, &username, &display_name],
+                &[&new_id, &username, &fallback_display_name],
             )
             .await
             .context("failed to insert new user")?;
@@ -1042,7 +1068,7 @@ async fn ensure_user_identity(
                 &final_user_id,
                 &platform,
                 &platform_user_id,
-                &username,
+                &platform_username,
             ],
         )
         .await
@@ -1050,10 +1076,10 @@ async fn ensure_user_identity(
 
     info!(
         user_id = %final_user_id,
-        username = %username,
         platform,
         platform_user_id,
-        "Auto-created user and identity on pairing"
+        invited_user_id = invited_user_id.unwrap_or(""),
+        "Claimed user identity on pairing"
     );
 
     Ok(role)
@@ -1082,6 +1108,73 @@ async fn check_known_identity(pool: &Pool, platform: &str, platform_user_id: &st
             false
         }
     }
+}
+
+async fn lookup_smith_user_identity(
+    pool: &Pool,
+    platform: &str,
+    platform_user_id: &str,
+) -> Option<(String, String)> {
+    let result = async {
+        let client = pool.get().await.context("pool connection")?;
+        let row = client
+            .query_opt(
+                "SELECT u.id, u.role
+                 FROM users u
+                 JOIN user_identities ui ON ui.user_id = u.id
+                 WHERE ui.platform = $1 AND ui.platform_user_id = $2 AND u.active = true",
+                &[&platform, &platform_user_id],
+            )
+            .await?;
+        Ok::<Option<(String, String)>, anyhow::Error>(
+            row.map(|row| (row.get::<_, String>("id"), row.get::<_, String>("role"))),
+        )
+    }
+    .await;
+
+    match result {
+        Ok(identity) => identity,
+        Err(err) => {
+            warn!(error = ?err, "Failed to resolve Smith user identity");
+            None
+        }
+    }
+}
+
+async fn build_identity_metadata(
+    state: &AppState,
+    platform: ChatPlatform,
+    platform_name: &str,
+    sender_id: &str,
+    display_name: Option<String>,
+    group_name: Option<String>,
+    session_key: &SessionKey,
+    agent_id: Option<String>,
+) -> Option<serde_json::Map<String, Value>> {
+    let secret = state.identity_secret.as_ref()?;
+    let (smith_user_id, smith_user_role) =
+        match lookup_smith_user_identity(&state.pg_pool, platform_name, sender_id).await {
+            Some((user_id, role)) => (Some(user_id), role),
+            None => (None, "guest".to_string()),
+        };
+
+    let claims = IdentityClaims::from_context(
+        platform,
+        sender_id,
+        session_key,
+        display_name,
+        group_name,
+        agent_id,
+        smith_user_id,
+        smith_user_role,
+        chrono::Duration::hours(1),
+    );
+
+    let mut meta = claims.to_metadata();
+    if let Ok(jwt) = claims.to_jwt(secret) {
+        meta.insert("x-oc-identity-token".to_string(), Value::String(jwt));
+    }
+    Some(meta.into_iter().collect())
 }
 
 /// Create an active pairing for a user that already has a known identity,
@@ -1163,7 +1256,7 @@ async fn start_new_session(
         })
         .collect();
 
-    let metadata = json!({
+    let mut metadata = json!({
         "source": &envelope.platform,
         "team_id": envelope.team_id,
         "team_name": envelope.team_name,
@@ -1178,6 +1271,31 @@ async fn start_new_session(
         "attachments": attachments,
         "agent_id": state.agent_id,
     });
+
+    let platform = parse_envelope_platform(&envelope.platform);
+    let session_key = SessionKey {
+        agent_id: state.agent_id.clone(),
+        channel: platform,
+        scope: SessionScope::Dm {
+            recipient_id: envelope.sender.id.clone(),
+        },
+    };
+    if let Some(identity) = build_identity_metadata(
+        state,
+        platform,
+        &envelope.platform,
+        &envelope.sender.id,
+        envelope.sender.display_name.clone(),
+        envelope.channel_name.clone(),
+        &session_key,
+        Some(state.agent_id.clone()),
+    )
+    .await
+    {
+        if let Value::Object(ref mut map) = metadata {
+            map.extend(identity);
+        }
+    }
 
     let payload = SessionStartRequestPayload {
         goal: envelope.message.clone(),
@@ -1223,37 +1341,28 @@ async fn publish_user_message(
         .context("thread record missing steering_subject")?;
 
     // Build identity metadata if secret is configured
-    let identity_meta = if let Some(secret) = &state.identity_secret {
-        let platform = parse_envelope_platform(&record.platform);
-        let session_key = SessionKey {
-            agent_id: record
-                .session_id
-                .map(|id| id.to_string())
-                .unwrap_or_default(),
-            channel: platform,
-            scope: SessionScope::Dm {
-                recipient_id: envelope.sender.id.clone(),
-            },
-        };
-
-        let claims = IdentityClaims::from_context(
-            platform,
-            &envelope.sender.id,
-            &session_key,
-            envelope.sender.display_name.clone(),
-            envelope.channel_name.clone(),
-            record.session_id.map(|id| id.to_string()),
-            chrono::Duration::hours(1),
-        );
-
-        let mut meta = claims.to_metadata();
-        if let Ok(jwt) = claims.to_jwt(secret) {
-            meta.insert("x-oc-identity-token".to_string(), Value::String(jwt));
-        }
-        Some(meta)
-    } else {
-        None
+    let platform = parse_envelope_platform(&record.platform);
+    let session_key = SessionKey {
+        agent_id: record
+            .session_id
+            .map(|id| id.to_string())
+            .unwrap_or_default(),
+        channel: platform,
+        scope: SessionScope::Dm {
+            recipient_id: envelope.sender.id.clone(),
+        },
     };
+    let identity_meta = build_identity_metadata(
+        state,
+        platform,
+        &record.platform,
+        &envelope.sender.id,
+        envelope.sender.display_name.clone(),
+        envelope.channel_name.clone(),
+        &session_key,
+        record.session_id.map(|id| id.to_string()),
+    )
+    .await;
 
     let mut metadata = json!({
         "source": record.platform,

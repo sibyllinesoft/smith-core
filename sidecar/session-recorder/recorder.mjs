@@ -12,7 +12,7 @@
  *
  * Env:
  *   NATS_URL            (default: nats://127.0.0.1:4222)
- *   SESSION_RECORDER_PG (default: postgresql://smith:smith-dev@postgres:5432/smith)
+ *   SESSION_RECORDER_PG (default: postgresql://smith:__set_via_env__@postgres:5432/smith)
  */
 
 import { connect, StringCodec } from "nats";
@@ -21,7 +21,7 @@ import pg from "pg";
 const NATS_URL = process.env.NATS_URL ?? "nats://127.0.0.1:4222";
 const PG_URL =
   process.env.SESSION_RECORDER_PG ??
-  "postgresql://smith:smith-dev@postgres:5432/smith";
+  "postgresql://smith:__set_via_env__@postgres:5432/smith";
 
 const sc = StringCodec();
 const pool = new pg.Pool({ connectionString: PG_URL, max: 3 });

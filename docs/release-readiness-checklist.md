@@ -33,7 +33,7 @@ Scope: single-user installation on a private network / VPN.
 
 ## Functionality / Self-Containment
 
-- [ ] Installer non-interactive flow works: `npx @sibyllinesoft/smith-installer --non-interactive`
+- [ ] Installer non-interactive flow works: `npx @sibyllinesoft/smith install --non-interactive`
 - [ ] Installer skill pack is packaged (`npm pack --dry-run --workspace installer`)
 - [ ] Core services up in compose: `nats`, `postgres`, `envoy`, `mcp-index`
 - [ ] If Cloudflare tunnel is configured: `just tunnel-cloudflare-e2e`
