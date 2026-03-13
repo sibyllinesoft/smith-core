@@ -1,4 +1,4 @@
-ARG SMITH_VERSION=latest
+ARG SMITH_VERSION=0.2.5
 FROM ghcr.io/sibyllinesoft/mcp-sidecar:${SMITH_VERSION} AS shim
 
 FROM node:22-alpine

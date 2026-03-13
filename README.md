@@ -173,17 +173,17 @@ just run-mcp-sidecar -- npx @modelcontextprotocol/server-filesystem /data
 ```
 
 Supports optional middleware transforms (TOML config) for input injection, output redaction, argument filtering, and more.
-Source lives in the dedicated sibling repo `../smith-tool-gateway`.
+Source lives in the dedicated sibling repo `../smith-gateway`.
 
 ### MCP Index — Tool catalog
 
 Aggregates tools from multiple MCP sidecar instances into a single searchable catalog. Agents query one endpoint to discover all available tools. Polls upstream sidecars at configurable intervals.
-Source lives in the dedicated sibling repo `../smith-tool-gateway`.
+Source lives in the dedicated sibling repo `../smith-gateway`.
 
 ### PG Auth Gateway
 
 Accepts standard Postgres wire clients, validates the Smith identity token, and binds hardened RLS context in PostgreSQL before any query executes.
-Source lives in the dedicated sibling repo `../smith-tool-gateway`.
+Source lives in the dedicated sibling repo `../smith-gateway`.
 
 ### Admission control
 
@@ -258,7 +258,7 @@ smith-core/
 └── justfile             # Development commands
 ```
 
-Related repo: `../smith-tool-gateway` contains `mcp-index`, `mcp-sidecar`, and `pg-auth-gateway`.
+Related repo: `../smith-gateway` contains `mcp-index`, `mcp-sidecar`, and `pg-auth-gateway`.
 
 ## Configuration
 
@@ -280,6 +280,8 @@ AGENTD_CONFIG=${AGENTD_ROOT}/config/agentd.toml
 MCP_INDEX_API_TOKEN=<generated>
 MCP_SIDECAR_API_TOKEN=<generated>
 PG_AUTH_GATEWAY_IDENTITY_SECRET=<generated>
+# Optional gateway image override (defaults to the smith-core release tag)
+# SMITH_VERSION=0.2.5
 # Optional persistent VM overrides
 SMITH_EXECUTOR_VM_POOL_ENABLED=true
 SMITH_EXECUTOR_VM_METHOD=gondolin
@@ -290,6 +292,11 @@ TELEGRAM_BOT_TOKEN=
 SLACK_BOT_TOKEN=
 SLACK_APP_TOKEN=
 ```
+
+Gateway-related images default to the Smith Core release tag baked into
+`docker-compose.yaml`. Set `SMITH_VERSION` only when you intentionally want to
+override that pin, for example to test `main` or a specific SHA build from
+`smith-gateway`.
 
 For customer-managed NATS, point `SMITH_NATS_URL` and `SMITH_NATS_DOCKER_URL` at your existing cluster and provision dedicated credentials with subject ACLs for Smith services.
 When `SMITH_EXECUTOR_VM_POOL_ENABLED=true` (or `executor.vm_pool.enabled=true` in `agentd.toml`), VM execution defaults to `gondolin` on macOS and `host` on other platforms (override with `SMITH_EXECUTOR_VM_METHOD`).

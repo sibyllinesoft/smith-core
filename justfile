@@ -104,15 +104,15 @@ npm-install:
 
 # Run the MCP shim (pass MCP server command after --)
 run-mcp-sidecar *args:
-    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-tool-gateway}/Cargo.toml -p mcp-sidecar -- {{args}}
+    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-gateway}/Cargo.toml -p mcp-sidecar -- {{args}}
 
 # Run the MCP index
 run-mcp-index:
-    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-tool-gateway}/Cargo.toml -p mcp-index
+    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-gateway}/Cargo.toml -p mcp-index
 
 # Run the Postgres auth gateway
 run-pg-auth-gateway:
-    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-tool-gateway}/Cargo.toml -p pg-auth-gateway
+    cargo run --manifest-path ${SMITH_TOOL_GATEWAY_ROOT:-../smith-gateway}/Cargo.toml -p pg-auth-gateway
 
 # Run agentd
 run-agentd:
