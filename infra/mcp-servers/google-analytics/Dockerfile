@@ -1,4 +1,4 @@
-ARG SMITH_VERSION=0.2.5
+ARG SMITH_VERSION=0.2.6
 FROM ghcr.io/sibyllinesoft/mcp-sidecar:${SMITH_VERSION} AS shim
 
 FROM python:3.12-alpine

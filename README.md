@@ -281,7 +281,7 @@ MCP_INDEX_API_TOKEN=<generated>
 MCP_SIDECAR_API_TOKEN=<generated>
 PG_AUTH_GATEWAY_IDENTITY_SECRET=<generated>
 # Optional gateway image override (defaults to the smith-core release tag)
-# SMITH_VERSION=0.2.5
+# SMITH_VERSION=0.2.6
 # Optional persistent VM overrides
 SMITH_EXECUTOR_VM_POOL_ENABLED=true
 SMITH_EXECUTOR_VM_METHOD=gondolin

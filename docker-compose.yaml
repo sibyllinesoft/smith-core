@@ -70,7 +70,7 @@ services:
       retries: 5
 
   pg-auth-gateway:
-    image: ghcr.io/sibyllinesoft/pg-auth-gateway:${SMITH_VERSION:-0.2.5}
+    image: ghcr.io/sibyllinesoft/pg-auth-gateway:${SMITH_VERSION:-0.2.6}
     container_name: smith-pg-auth-gateway
     hostname: pg-auth-gateway
     expose:
@@ -301,7 +301,7 @@ services:
 
   # ── MCP Sidecar (pre-built image) ───────────────────────────────────────
   mcp-sidecar:
-    image: ghcr.io/sibyllinesoft/mcp-sidecar:${SMITH_VERSION:-0.2.5}
+    image: ghcr.io/sibyllinesoft/mcp-sidecar:${SMITH_VERSION:-0.2.6}
     entrypoint: ["true"]
     restart: "no"
 
@@ -310,7 +310,7 @@ services:
     build:
       context: ./infra/mcp-servers/postgres
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-postgres
     hostname: mcp-postgres
     expose:
@@ -339,7 +339,7 @@ services:
     build:
       context: ./infra/mcp-servers/users
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-users
     hostname: mcp-users
     expose:
@@ -370,7 +370,7 @@ services:
     build:
       context: ./infra/mcp-servers/cron
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-cron
     hostname: mcp-cron
     expose:
@@ -404,7 +404,7 @@ services:
     build:
       context: ./infra/mcp-servers/github
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-github
     hostname: mcp-github
     expose:
@@ -430,7 +430,7 @@ services:
     build:
       context: ./infra/mcp-servers/google
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-google
     hostname: mcp-google
     expose:
@@ -459,7 +459,7 @@ services:
     build:
       context: ./infra/mcp-servers/google-analytics
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-google-analytics
     hostname: mcp-google-analytics
     expose:
@@ -488,7 +488,7 @@ services:
     build:
       context: ./infra/mcp-servers/notion
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-notion
     hostname: mcp-notion
     expose:
@@ -514,7 +514,7 @@ services:
     build:
       context: ./infra/mcp-servers/slack
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-slack
     hostname: mcp-slack
     expose:
@@ -541,7 +541,7 @@ services:
     build:
       context: ./infra/mcp-servers/twitter
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-twitter
     hostname: mcp-twitter
     expose:
@@ -570,7 +570,7 @@ services:
     build:
       context: ./infra/mcp-servers/discord
       args:
-        SMITH_VERSION: ${SMITH_VERSION:-0.2.5}
+        SMITH_VERSION: ${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-discord
     hostname: mcp-discord
     expose:
@@ -594,7 +594,7 @@ services:
 
   # ── MCP Index (Tool Catalog) ────────────────────────────────────────────
   mcp-index:
-    image: ghcr.io/sibyllinesoft/mcp-index:${SMITH_VERSION:-0.2.5}
+    image: ghcr.io/sibyllinesoft/mcp-index:${SMITH_VERSION:-0.2.6}
     container_name: smith-mcp-index
     hostname: mcp-index
     ports:
