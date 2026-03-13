@@ -178,6 +178,7 @@ CREATE TABLE users (
   username     TEXT NOT NULL UNIQUE,
   display_name TEXT NOT NULL DEFAULT '',
   role         TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('admin', 'user', 'guest')),
+  tool_config  JSONB NOT NULL DEFAULT '{}',
   config       JSONB NOT NULL DEFAULT '{}',
   active       BOOLEAN NOT NULL DEFAULT true,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),

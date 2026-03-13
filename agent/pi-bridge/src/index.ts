@@ -1965,11 +1965,13 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           const result = await q(sql, vals);
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result.rows, null, 2) }],
+            isError: false,
             details: undefined,
           };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error listing users: ${err}` }],
+            isError: true,
             details: undefined,
           };
         }
@@ -1990,6 +1992,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
         if (!params.id && !params.username) {
           return {
             content: [{ type: "text" as const, text: "Error: provide either id or username" }],
+            isError: true,
             details: undefined,
           };
         }
@@ -2005,6 +2008,7 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           if (userResult.rows.length === 0) {
             return {
               content: [{ type: "text" as const, text: `User not found: ${field}=${value}` }],
+              isError: true,
               details: undefined,
             };
           }
@@ -2017,11 +2021,13 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           const output = { ...userRow, identities: idResult.rows };
           return {
             content: [{ type: "text" as const, text: JSON.stringify(output, null, 2) }],
+            isError: false,
             details: undefined,
           };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error getting user: ${err}` }],
+            isError: true,
             details: undefined,
           };
         }
@@ -2053,11 +2059,13 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           );
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result.rows[0], null, 2) }],
+            isError: false,
             details: undefined,
           };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error creating user: ${err}` }],
+            isError: true,
             details: undefined,
           };
         }
@@ -2111,16 +2119,19 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           if (result.rowCount === 0) {
             return {
               content: [{ type: "text" as const, text: `User not found: ${params.id}` }],
+              isError: true,
               details: undefined,
             };
           }
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result.rows[0], null, 2) }],
+            isError: false,
             details: undefined,
           };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error updating user: ${err}` }],
+            isError: true,
             details: undefined,
           };
         }
@@ -2152,11 +2163,13 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           );
           return {
             content: [{ type: "text" as const, text: JSON.stringify(result.rows[0], null, 2) }],
+            isError: false,
             details: undefined,
           };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error adding identity: ${err}` }],
+            isError: true,
             details: undefined,
           };
         }
@@ -2183,16 +2196,19 @@ function buildUserManagementTools(user: ResolvedUser): any[] {
           if (result.rowCount === 0) {
             return {
               content: [{ type: "text" as const, text: `Identity not found: ${params.id}` }],
+              isError: true,
               details: undefined,
             };
           }
           return {
             content: [{ type: "text" as const, text: `Removed identity ${params.id}` }],
+            isError: false,
             details: undefined,
           };
         } catch (err) {
           return {
             content: [{ type: "text" as const, text: `Error removing identity: ${err}` }],
+            isError: true,
             details: undefined,
           };
         }

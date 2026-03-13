@@ -1594,6 +1594,8 @@ async fn nats_response_watcher(
         .subscribe(response_subject.clone())
         .await
         .with_context(|| format!("failed to subscribe to {response_subject}"))?;
+    let mut buffered_content = String::new();
+    let mut buffered_attachments: Vec<Attachment> = Vec::new();
 
     while let Some(msg) = subscriber.next().await {
         let payload: Value = match serde_json::from_slice(&msg.payload) {
@@ -1656,15 +1658,23 @@ async fn nats_response_watcher(
 
         match msg_type {
             "message" => {
-                if !content.is_empty() || !attachments.is_empty() {
+                if !content.is_empty() {
+                    buffered_content = content.to_string();
+                }
+                if !attachments.is_empty() {
+                    buffered_attachments = attachments;
+                }
+
+                if done && (!buffered_content.is_empty() || !buffered_attachments.is_empty()) {
                     if let Err(err) =
-                        handle_session_log(&state, &record, content, &attachments).await
+                        handle_session_log(&state, &record, &buffered_content, &buffered_attachments)
+                            .await
                     {
                         warn!(
                             error = ?err,
                             session_id,
-                            content_len = content.len(),
-                            attachment_count = attachments.len(),
+                            content_len = buffered_content.len(),
+                            attachment_count = buffered_attachments.len(),
                             "Failed to relay message to chat, continuing"
                         );
                     }
